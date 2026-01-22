@@ -1,0 +1,143 @@
+# ============================================
+# QNX Scheduler Tracer - Git Ignore
+# ============================================
+
+# ============================================
+# 编译输出
+# ============================================
+build/
+*.o
+*.a
+*.so
+*.so.*
+
+cmake_build/
+
+docs/
+
+# 可执行文件
+qst_demo
+qst_parse
+
+# ============================================
+# 运行时产生的文件
+# ============================================
+# Trace 数据文件
+*.qst
+*.bin
+sched_trace.bin
+
+# Chrome/Perfetto 格式输出
+*.json
+trace.json
+
+# Core dump 文件
+*.core
+core.*
+
+# ============================================
+# IDE 和编辑器
+# ============================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# CLion / IntelliJ
+.idea/
+*.iml
+cmake-build-*/
+
+# Eclipse
+.project
+.cproject
+.settings/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+Session.vim
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ============================================
+# 操作系统
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*.directory
+
+# ============================================
+# Python (qst_parse.py)
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.mypy_cache/
+.pytest_cache/
+
+# ============================================
+# 日志文件
+# ============================================
+log/
+*.log
+logs/
+
+# ============================================
+# 临时文件
+# ============================================
+*.tmp
+*.temp
+*.bak
+*.backup
+tmp/
+temp/
+
+# ============================================
+# 文档生成
+# ============================================
+docs/_build/
+docs/html/
+docs/latex/
+*.pdf
+
+# ============================================
+# 测试输出
+# ============================================
+test_*.qst
+test_*.json
+coverage/
+.coverage
+htmlcov/
+
