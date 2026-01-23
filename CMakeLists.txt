@@ -79,13 +79,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 else()
     # 非 QNX 系统的编译选项
-    add_compile_options(
-        -Wall
-        -Wextra
-        -Wpedantic
-        -O2
-        -g
-    )
+add_compile_options(
+    -Wall
+    -Wextra
+    -Wpedantic
+    -O2
+    -g
+)
 endif()
 
 # ============================================================================

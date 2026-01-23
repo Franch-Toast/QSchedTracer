@@ -1,0 +1,14 @@
+# 导入 bazel_configs 中的公共配置
+import %workspace%/../bazel_configs/.bazelrc
+
+# ============================================================================
+# QSchedTracer 特定配置
+# ============================================================================
+
+# 快速编译模式
+build:fastbuild --compilation_mode=fastbuild
+
+# QNX 默认提供 SA8650 和 SA8797 QNX aarch64 交叉编译 (快捷方式)
+build:qnx_lp8650 --config=sa8650_qnx
+build:qnx_lp8797 --config=sa8797_qnx
+

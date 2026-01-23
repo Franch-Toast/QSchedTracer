@@ -13,6 +13,15 @@ build/
 
 cmake_build/
 
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-QSchedTracer
+.cache/
+__pycache__/
+
+MODULE.bazel.lock
+
 docs/
 
 # 可执行文件

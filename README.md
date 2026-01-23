@@ -4,7 +4,7 @@
 
 ## 概述
 
-QSchedTracer 是专为 QNX Neutrino RTOS 设计的调度事件追踪工具。采用"飞行记录仪"模式持续记录系统调度事件，支持导出为 [Perfetto](https://ui.perfetto.dev/) 可视化格式。
+QSchedTracer 是专为 QNX7.1 Neutrino RTOS 设计的调度事件追踪工具。采用"飞行记录仪"模式持续记录系统调度事件，支持导出为 [Perfetto](https://ui.perfetto.dev/) 可视化格式。
 
 **主要特性**：
 
@@ -109,8 +109,19 @@ python3 tools/qst_parse.py trace.qst -o trace.json
 |------|------|------|
 | QNX SDP | 7.1+ | 交叉编译工具链 |
 | C++ | C++17 | 语言标准 |
-| spdlog | 1.17.0 | 日志库 (已集成, header-only) |
+| spdlog | 1.15+ | 日志库 (自动选择，见下文) |
 | Python | 3.6+ | 解析器运行环境 |
+
+### 日志库说明
+
+QSchedTracer 支持两种 spdlog 来源，通过编译方式自动选择：
+
+| 编译方式 | spdlog 来源 | 宏定义 |
+|----------|-------------|--------|
+| Bazel | `@spdlog//:spdlog` (compiled library) | `BAZEL_BUILD` |
+| build.bash / CMake | 本地 `spdlog/` (header-only) | 无 |
+
+代码层面使用统一接口 `LOG_INFO(fmt, ...)`，无需修改。详见 `include/qst/log.hpp`。
 
 ### 方法一：使用 build.bash (推荐)
 
@@ -147,7 +158,36 @@ make
 
 **输出**：`qst_tracer` (QNX ARM64 可执行文件)
 
-### 方法三：使用 Bear 生成 compile_commands.json (IDE 支持)
+### 方法三：使用 Bazel 构建 (推荐用于 CI/CD)
+
+该方案需要 bazel_configs 和 third_party 仓库，可以使用提供的 BUILD 文件进行构建：
+
+```bash
+# 构建可执行文件 (QNX SA8650 平台)
+bazel build --config=sa8650_qnx //:qst_tracer_bin
+
+# 构建完整发布包
+bazel build --config=sa8650_qnx //:qst_tracer_release_package
+
+```
+
+#### Bazel 平台配置
+
+| 配置 | 说明 | 命令示例 |
+|------|------|----------|
+| `sa8650_qnx` | SA8650 QNX aarch64 平台 | `bazel build --config=sa8650_qnx //:qst_tracer_bin` |
+| `sa8797_qnx` | SA8797 QNX aarch64 平台 | `bazel build --config=sa8797_qnx //:qst_tracer_bin` |
+
+
+#### Bazel 依赖说明
+
+BUILD 文件使用了 `platform_cc_library` 和 `platform_cc_binary` 宏，这些宏来自 `bazel_configs/rules/modules/platform_cc_wrapper.bzl`，提供了：
+- QNX 工具链自动注册 (`deeproute_register_toolchains`)
+- 平台特定的编译选项
+- 跨平台构建支持
+
+
+### 方法四：使用 Bear 生成 compile_commands.json (IDE 支持)
 
 ```bash
 # 1. 安装 bear (Ubuntu/Debian)

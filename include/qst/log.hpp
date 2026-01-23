@@ -1,15 +1,35 @@
 /**
  * @file log.hpp
- * @brief QSchedTracer - 日志工具 (基于 spdlog)
- * 
+ * @brief QSchedTracer - 日志工具 (统一接口)
+ *
  * @details
- * 使用 spdlog 1.17.0 作为日志后端，支持彩色输出和格式化。
- * 
+ * 支持两种编译模式：
+ * - Bazel 构建 (BAZEL_BUILD): 使用 @spdlog//:spdlog (compiled library)
+ * - 脚本/CMake 构建: 使用本地集成的 spdlog (header-only)
+ *
+ * 统一接口: LOG_INFO(fmt, ...) / LOG_DEBUG / LOG_WARN / LOG_ERROR
+ *
  * @author QSchedTracer Team
- * @date 2026-01-21
+ * @date 2026-01-23
  */
 
 #pragma once
+
+#ifdef BAZEL_BUILD
+// ============================================================================
+// 方案 A: Bazel 构建 - 使用 third_party spdlog (compiled library)
+// ============================================================================
+
+// third_party spdlog 使用 compiled library 模式
+// 已经定义了 SPDLOG_COMPILED_LIB
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
+#else
+// ============================================================================
+// 方案 B: 脚本/CMake 构建 - 使用本地 spdlog (header-only)
+// ============================================================================
 
 // 使用 spdlog header-only 模式
 #define SPDLOG_HEADER_ONLY
@@ -22,8 +42,12 @@
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+
+#endif // BAZEL_BUILD
+
 #include <memory>
 #include <string>
+#include <cstring>
 
 namespace qst {
 namespace log {
@@ -44,10 +68,10 @@ inline std::shared_ptr<spdlog::logger>& getLogger() {
     if (!logger) {
         // 创建 stderr 彩色输出 sink
         auto console_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
-        
+
         // 设置格式: [时间] [级别] [QST] 消息
         console_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [QST] %v");
-        
+
         // 创建 logger
         logger = std::make_shared<spdlog::logger>("qst", console_sink);
         logger->set_level(spdlog::level::info);  // 默认级别
@@ -89,7 +113,7 @@ inline void shutdown() {
 
 // 获取文件名 (不含路径)
 inline const char* basename(const char* path) {
-    const char* p = strrchr(path, '/');
+    const char* p = std::strrchr(path, '/');
     return p ? p + 1 : path;
 }
 
@@ -97,7 +121,7 @@ inline const char* basename(const char* path) {
 } // namespace qst
 
 // ============================================================================
-// 日志宏 (基于 spdlog)
+// 日志宏 (两种模式共享，基于 spdlog)
 // ============================================================================
 
 // 调试日志 (带文件名和行号)
@@ -130,4 +154,3 @@ inline const char* basename(const char* path) {
 
 #define LOG_ERROR_IF(cond, fmt, ...) \
     do { if (cond) LOG_ERROR(fmt, ##__VA_ARGS__); } while(0)
-
