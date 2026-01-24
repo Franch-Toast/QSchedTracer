@@ -33,6 +33,11 @@ namespace qst {
 // 全局实例指针 (用于静态回调)
 Tracer* Tracer::instance_ = nullptr;
 
+// 信号追踪静态变量
+volatile sig_atomic_t Tracer::signal_detected_ = 0;
+volatile int Tracer::last_signal_target_pid_ = 0;
+volatile int Tracer::last_signal_signo_ = 0;
+
 // ============================================================================
 // 构造和析构
 // ============================================================================
@@ -75,13 +80,14 @@ uint64_t Tracer::getClockFreq() {
 int Tracer::run() {
     // 打印 Banner
     LOG_INFO("╔══════════════════════════════════════════════════════╗");
-    LOG_INFO("║   QSchedTracer - QNX 调度追踪器 (飞行记录仪模式)     ║");
+    LOG_INFO("║   QSchedTracer - QNX 调度追踪 (飞行记录仪模式)       ║");
     LOG_INFO("╠══════════════════════════════════════════════════════╣");
     LOG_INFO("║ 采集时长:    {} 秒 {}", config_.duration_sec, 
-             config_.duration_sec == 0 ? "(无限)" : "");
+             config_.duration_sec == 0 ? "(无限，Ctrl+C 退出)" : "");
     LOG_INFO("║ 输出文件:    {}", config_.output_file);
     LOG_INFO("║ 缓冲区:      {} MB", config_.buffer_size / (1024 * 1024));
     LOG_INFO("║ CPU 数量:    {}", getCpuCount());
+    LOG_INFO("║ SIGKILL触发: {}", config_.enable_signal_trigger ? "启用" : "禁用");
     LOG_INFO("╚══════════════════════════════════════════════════════╝");
     
     // 配置内核 trace
@@ -244,20 +250,57 @@ int Tracer::setupTrace() {
     TraceEvent(_NTO_TRACE_CLRCLASSTID, _NTO_TRACE_KERCALL);
     TraceEvent(_NTO_TRACE_CLRCLASSPID, _NTO_TRACE_THREAD);
     TraceEvent(_NTO_TRACE_CLRCLASSTID, _NTO_TRACE_THREAD);
+    TraceEvent(_NTO_TRACE_CLRCLASSPID, _NTO_TRACE_KERCALLENTER);
+    TraceEvent(_NTO_TRACE_CLRCLASSTID, _NTO_TRACE_KERCALLENTER);
     
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_THREAD);
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_VTHREAD);
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_PROCESS);
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_CONTROL);
     
-    // 9. 设置 FAST 模式
+    // 9. 设置 FAST 模式 (调度事件)
     TraceEvent(_NTO_TRACE_SETALLCLASSESFAST);
     
-    // 10. 设置 Linear 模式 (buffer 满时通知)
+    // 10. 可选: 启用 SIGKILL 触发落盘
+    if (config_.enable_signal_trigger) {
+        LOG_INFO("启用 SIGKILL 触发落盘...");
+        
+        // 初始化事件数据结构
+        memset(signal_data_array_, 0, sizeof(signal_data_array_));
+        signal_event_data_.data_array = signal_data_array_;
+        
+        // 添加 __KER_SIGNAL_KILL 事件 (Wide mode)
+        ret = TraceEvent(_NTO_TRACE_ADDEVENT, 
+                         _NTO_TRACE_KERCALLENTER, 
+                         __KER_SIGNAL_KILL);
+        if (ret == -1) {
+            LOG_WARN("添加 SIGNAL_KILL 事件失败: {} (将禁用信号触发)", strerror(errno));
+        } else {
+            // 设置该事件为 Wide 模式 (获取完整参数)
+            TraceEvent(_NTO_TRACE_SETEVENTWIDE, _NTO_TRACE_KERCALLENTER, __KER_SIGNAL_KILL);
+            
+            // 注册事件处理器
+            ret = TraceEvent(_NTO_TRACE_ADDEVENTHANDLER,
+                             _NTO_TRACE_KERCALLENTER,
+                             __KER_SIGNAL_KILL,
+                             signalKillEventHandler,
+                             &signal_event_data_);
+            if (ret == -1) {
+                LOG_WARN("注册事件处理器失败: {} (将禁用信号触发)", strerror(errno));
+            } else {
+                LOG_INFO("已注册 __KER_SIGNAL_KILL 事件处理器 (Wide mode)");
+            }
+        }
+    }
+    
+    // 11. 设置 Linear 模式 (buffer 满时通知)
     TraceEvent(_NTO_TRACE_SETLINEARMODE);
     
     LOG_INFO("内核 trace 配置完成");
     LOG_INFO("  事件类别: THREAD + VTHREAD + PROCESS + CONTROL");
+    if (config_.enable_signal_trigger) {
+        LOG_INFO("  信号触发: SIGKILL (Wide mode)");
+    }
     LOG_INFO("  Buffer 模式: Linear (InterruptHookTrace)");
     
     return 0;
@@ -271,6 +314,16 @@ void Tracer::cleanupTrace() {
     LOG_INFO("清理内核 trace 资源...");
     
     TraceEvent(_NTO_TRACE_STOP);
+    
+    // 清理信号事件处理器 (如果启用了)
+    if (config_.enable_signal_trigger) {
+        TraceEvent(_NTO_TRACE_DELEVENTHANDLER, 
+                   _NTO_TRACE_KERCALLENTER, 
+                   __KER_SIGNAL_KILL);
+        TraceEvent(_NTO_TRACE_DELEVENT, 
+                   _NTO_TRACE_KERCALLENTER, 
+                   __KER_SIGNAL_KILL);
+    }
     
     if (hook_id_ != -1) {
         InterruptDetach(hook_id_);
@@ -303,10 +356,18 @@ void Tracer::runCollection() {
     LOG_INFO("开始采集...");
     LOG_INFO("采集时长: {} 秒{}", config_.duration_sec, 
              config_.duration_sec == 0 ? " (无限，Ctrl+C 停止)" : "");
+    if (config_.enable_signal_trigger) {
+        LOG_INFO("SIGKILL 触发落盘: 启用");
+    }
     
     // 设置时钟频率 (用于时间转换)
     ring_buffer_.setClockFreq(getClockFreq());
     LOG_INFO("时钟频率: {} Hz", ring_buffer_.clockFreq());
+    
+    // 重置信号检测标志
+    signal_detected_ = 0;
+    last_signal_target_pid_ = 0;
+    last_signal_signo_ = 0;
     
     ring_buffer_.setState(State::Running);
     
@@ -319,7 +380,6 @@ void Tracer::runCollection() {
     
     time_t start_time = time(nullptr);
     int last_sec = -1;
-    uint64_t last_events = 0;
     
     struct _pulse pulse;
     uint64_t timeout = constants::MSG_TIMEOUT_NS;
@@ -333,16 +393,15 @@ void Tracer::runCollection() {
             break;
         }
         
-        // 每秒打印进度
-        if (elapsed > last_sec) {
+        // 每 10 秒打印一次进度 (避免日志过多)
+        if (elapsed > last_sec && elapsed % 10 == 0) {
             last_sec = elapsed;
-            size_t current_events = ring_buffer_.eventCount();
-            size_t delta = current_events - last_events;
-            last_events = current_events;
-            
-            LOG_INFO("[进度] {}/{} 秒 | 事件: {} (+{}) | Buffer: {}", 
-                    elapsed, config_.duration_sec, current_events, delta, 
-                    static_cast<size_t>(buffers_processed_));
+            // 显示缓冲区使用率 (write_pos / capacity)
+            size_t usage_percent = (ring_buffer_.writePos() * 100) / ring_buffer_.capacity();
+            LOG_INFO("[进度] 已运行 {} 秒 | 缓冲区: {}% | 环绕: {} 次", 
+                    elapsed, usage_percent, ring_buffer_.wrapCount());
+        } else if (elapsed > last_sec) {
+            last_sec = elapsed;
         }
         
         // 等待 pulse
@@ -351,6 +410,68 @@ void Tracer::runCollection() {
         
         if (rcvid == 0 && pulse.code == constants::PULSE_CODE_BUFFER_READY) {
             // 数据已在中断回调中处理
+        }
+        
+        // ================================================================
+        // 检查是否检测到 SIGKILL (仅当 enable_signal_trigger=true 时)
+        // ================================================================
+        if (config_.enable_signal_trigger && signal_detected_) {
+            int signo = static_cast<int>(last_signal_signo_);
+            int target_pid = static_cast<int>(last_signal_target_pid_);
+            
+            // 只对 SIGKILL (信号 9) 触发落盘
+            if (signo == 9) {
+                LOG_INFO("检测到 SIGKILL: 目标 PID={}", target_pid);
+
+                usleep(20000);  // 等20ms让程序销毁，不必然可能获取不到销毁的记录
+                
+                // 1. 停止 trace
+                TraceEvent(_NTO_TRACE_STOP);
+                // 2. 立即获取时间戳
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+         
+                TraceEvent(_NTO_TRACE_FLUSHBUFFER);
+                usleep(20000);  // 等待 buffer 处理
+                
+                ring_buffer_.setWallclockSec(ts.tv_sec);
+                ring_buffer_.setWallclockNsec(ts.tv_nsec);
+                
+                // 3. 生成文件名
+                char filename[256];
+                struct tm tm_info;
+                localtime_r(&ts.tv_sec, &tm_info);
+                snprintf(filename, sizeof(filename),
+                         "signal_%04d%02d%02d_%02d%02d%02d.qst",
+                         tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+                         tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+                
+                // 4. 保存当前文件名，临时切换
+                std::string saved_file = config_.output_file;
+                config_.output_file = filename;
+                
+                LOG_INFO("保存数据到: {}", filename);
+                
+                // 5. 采集进程信息并保存
+                collectProcessInfo();
+                saveToFile();
+                
+                // 6. 恢复文件名
+                config_.output_file = saved_file;
+                
+                // 7. 清空 buffer 准备继续采集
+                ring_buffer_.reset();
+                LOG_INFO("缓冲区已重置，继续采集...");
+                
+                // 8. 重新开始 trace
+                TraceEvent(_NTO_TRACE_STARTNOSTATE);
+                ring_buffer_.setState(State::Running);
+            }
+            
+            // 重置信号检测标志
+            signal_detected_ = 0;
+            last_signal_target_pid_ = 0;
+            last_signal_signo_ = 0;
         }
     }
     
@@ -670,6 +791,45 @@ void Tracer::printStats() const {
     LOG_INFO("║ 环绕次数:      {} 次", ring_buffer_.wrapCount());
     LOG_INFO("║ 总字节数:      {} 字节", static_cast<size_t>(ring_buffer_.totalBytes()));
     LOG_INFO("╚══════════════════════════════════════════╝");
+}
+
+// ============================================================================
+// 信号追踪模式
+// ============================================================================
+
+/**
+ * SignalKill 事件处理器 (Wide mode)
+ * 
+ * @warning 运行在内核/中断上下文！
+ *          只能调用中断安全函数！
+ *          禁止调用: printf, malloc, fopen, 任何 I/O
+ */
+int Tracer::signalKillEventHandler(event_data_t* event_data) {
+    // Wide mode 数据布局:
+    // data_array[0] = nd (reserved)
+    // data_array[1] = pid (目标进程)
+    // data_array[2] = tid (目标线程)
+    // data_array[3] = signo (信号编号)
+    // data_array[4] = code
+    // data_array[5] = value
+    
+    if (event_data && event_data->el_num >= 4) {
+        int signo = static_cast<int>(event_data->data_array[3]);
+        int target_pid = static_cast<int>(event_data->data_array[1]);
+        
+        // 只对 SIGKILL (信号 9) 触发落盘
+        // 其他信号记录到 trace buffer 但不触发落盘
+        if (signo == 9) {  // SIGKILL
+            last_signal_target_pid_ = target_pid;
+            last_signal_signo_ = signo;
+            
+            // 设置标志，通知主线程
+            signal_detected_ = 1;
+        }
+    }
+    
+    // 返回 1 表示记录所有 SignalKill 事件到 trace buffer
+    return 1;
 }
 
 } // namespace qst

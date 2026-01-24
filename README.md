@@ -1,38 +1,58 @@
 # QSchedTracer
 
-**QNX 调度追踪器** - 轻量级飞行记录仪模式调度事件采集工具
+**QNX 调度/信号追踪器** - 轻量级飞行记录仪模式事件采集工具
 
 ## 概述
 
-QSchedTracer 是专为 QNX7.1 Neutrino RTOS 设计的调度事件追踪工具。采用"飞行记录仪"模式持续记录系统调度事件，支持导出为 [Perfetto](https://ui.perfetto.dev/) 可视化格式。
+QSchedTracer 是专为 QNX7.1 Neutrino RTOS 设计的系统追踪工具。支持两种追踪模式：
+- **调度模式**：采集线程调度事件 (sched_switch)
+- **信号模式**：采集 SignalKill 系统调用
+
+采用"飞行记录仪"模式持续记录事件，支持导出为 [Perfetto](https://ui.perfetto.dev/) 可视化格式。
 
 **主要特性**：
 
 - 高性能采集：`InterruptHookTrace` + Linear 模式，中断级数据传输
 - 飞行记录仪模式：环形缓冲区持续记录，仅在需要时落盘
 - 真实时间戳：支持 UNIX 时间戳转换，精确到微秒
+- **信号追踪**：Wide mode 捕获完整的 SignalKill 参数 (目标 PID/TID, signo, code, value)
 - Perfetto 集成：导出标准 Chrome Trace Event 格式
 
 ## 快速开始
 
+### 调度追踪模式 (默认)
+
 ```bash
 # 1. 编译
-./build.bash (或使用cmake编译)
+./build.bash
 
 # 2. 部署到 QNX 设备
 scp build/qnx_aarch64/qst_tracer root@<QNX_IP>:/tmp/
 
-# 3. 运行采集 (5秒)
+# 3. 运行调度采集 (5秒)
 ssh root@<QNX_IP> '/tmp/qst_tracer -d 5 -o /tmp/trace.qst'
 
-# 4. 取回数据
+# 4. 取回数据并解析
 scp root@<QNX_IP>:/tmp/trace.qst .
-
-# 5. 解析并导出 JSON
 python3 tools/qst_parse.py trace.qst -o trace.json
 
-# 6. 可视化
-   打开 https://ui.perfetto.dev/ 并拖入 trace.json
+# 5. 可视化: 打开 https://ui.perfetto.dev/ 并拖入 trace.json
+```
+
+### 信号追踪模式 (NEW)
+
+```bash
+# 1. 运行信号追踪 (无限时长，检测到信号自动落盘)
+ssh root@<QNX_IP> '/tmp/qst_tracer -m signal -d 0'
+
+# 2. 在另一个终端发送信号
+ssh root@<QNX_IP> 'kill -9 <PID>'
+
+# 3. 采集器检测到 SIGKILL 后自动保存为 signal_YYYYMMDD_HHMMSS_NNN.qst
+# 4. 按 Ctrl+C 停止采集
+
+# 5. 解析信号事件
+python3 tools/qst_parse.py signal_*.qst -o signals.json
 ```
 
 ## 架构
@@ -243,8 +263,8 @@ qst_tracer [选项]
   -v         详细输出
   -h         显示帮助
 
-示例:
-  qst_tracer -d 10 -o trace.qst      # 采集 10 秒
+调度模式示例:
+  qst_tracer -d 10 -o trace.qst      # 采集 10 秒调度事件
   qst_tracer -d 0 -b 20              # 20MB 缓冲，无限采集
 ```
 

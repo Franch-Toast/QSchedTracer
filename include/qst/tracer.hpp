@@ -49,9 +49,11 @@
 #include <memory>
 #include <functional>
 #include <atomic>
+#include <csignal>
 
 #include <sys/neutrino.h>
 #include <sys/trace.h>
+#include <sys/kercalls.h>
 
 namespace qst {
 
@@ -59,9 +61,10 @@ namespace qst {
  * @brief 追踪器配置
  */
 struct TracerConfig {
-    int duration_sec = 5;                           ///< 采集时长 (秒, 0=无限)
+    int duration_sec = 0;                           ///< 采集时长 (秒, 0=无限，仅 Ctrl+C 退出)
     std::string output_file = "trace.qst";          ///< 输出文件
     size_t buffer_size = constants::DEFAULT_BUFFER_SIZE;  ///< 缓冲区大小
+    bool enable_signal_trigger = true;              ///< 启用 SIGKILL 触发落盘 (检测到 SIGKILL 时自动落盘并继续采集)
 };
 
 /**
@@ -124,6 +127,8 @@ private:
     /**
      * @brief 设置内核 trace
      * @return 0 成功, -1 失败
+     * 
+     * 设置调度追踪 (Fast mode) 和可选的信号追踪 (Wide mode for SIGKILL)
      */
     int setupTrace();
     
@@ -134,6 +139,11 @@ private:
     
     /**
      * @brief 运行采集循环
+     * 
+     * 持续采集调度事件，直到：
+     * - 达到指定时长 (duration_sec > 0)
+     * - 用户按 Ctrl+C
+     * - 检测到 SIGKILL (触发落盘后继续采集)
      */
     void runCollection();
     
@@ -158,6 +168,12 @@ private:
      * @brief 中断回调函数
      */
     static const struct sigevent* bufferReadyHandler(int info);
+    
+    /**
+     * @brief SignalKill 事件处理器 (Wide mode)
+     * @note 运行在内核/中断上下文，只能调用中断安全函数！
+     */
+    static int signalKillEventHandler(event_data_t* event_data);
 
 private:
     TracerConfig config_;
@@ -189,6 +205,18 @@ private:
     // - 正常采集时指向 ring_buffer_
     // - 采集进程信息时临时切换到其他缓冲区
     RingBuffer* active_buffer_{nullptr};
+    
+    // ========== 信号追踪相关 ==========
+    
+    // 信号事件数据结构 (用于事件处理器)
+    event_data_t signal_event_data_;
+    uint32_t signal_data_array_[10];  // Wide mode: nd, pid, tid, signo, code, value
+    
+    // 信号检测标志 (volatile，在中断处理器中设置)
+    static volatile sig_atomic_t signal_detected_;
+    static volatile int last_signal_target_pid_;
+    static volatile int last_signal_signo_;
+    
 };
 
 } // namespace qst

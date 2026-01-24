@@ -106,6 +106,30 @@ PROCESS_EVENTS = {
     16: "PROCTHREAD_NAME",
 }
 
+# 内核调用编号 (来自 sys/kercalls.h)
+# 注意: 使用单下划线前缀避免 Python 名称修饰 (name mangling)
+class KernelCall:
+    KER_SIGNAL_KILL = 26          # 0x1a
+    KER_SIGNAL_RETURN = 27
+    KER_SIGNAL_FAULT = 28
+    KER_SIGNAL_ACTION = 29
+    KER_SIGNAL_PROCMASK = 30
+    KER_SIGNAL_SUSPEND = 31
+    KER_SIGNAL_WAITINFO = 32
+    KER_SIGNAL_KILL_SIGVAL = 33
+
+# 信号名称映射
+SIGNAL_NAMES = {
+    1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
+    5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE",
+    9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2",
+    13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM", 16: "SIGSTKFLT",
+    17: "SIGCHLD", 18: "SIGCONT", 19: "SIGSTOP", 20: "SIGTSTP",
+    21: "SIGTTIN", 22: "SIGTTOU", 23: "SIGURG", 24: "SIGXCPU",
+    25: "SIGXFSZ", 26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH",
+    29: "SIGIO", 30: "SIGPWR", 31: "SIGSYS",
+}
+
 # 结构类型
 class StructType(IntEnum):
     SIMPLE = 0
@@ -258,6 +282,30 @@ class ThreadEvent:
     is_vthread: bool = False
 
 
+@dataclass
+class SignalKillEvent:
+    """SignalKill 事件 (Wide mode 组合事件)"""
+    timestamp_cycles: int       # 时间戳 (cycles)
+    timestamp_ns: int = 0       # UNIX 纳秒时间戳
+    cpu_id: int = 0             # CPU ID
+    
+    # Wide mode 数据: nd, pid, tid, signo, code, value
+    nd: int = 0                 # reserved
+    target_pid: int = 0         # 目标进程 ID
+    target_tid: int = 0         # 目标线程 ID
+    signo: int = 0              # 信号编号
+    code: int = 0               # 信号代码
+    value: int = 0              # 信号值
+    
+    # 推断的发送者 (从 RUNNING 事件)
+    sender_pid: int = 0
+    sender_tid: int = 0
+    
+    @property
+    def signal_name(self) -> str:
+        return SIGNAL_NAMES.get(self.signo, f"SIG{self.signo}")
+
+
 # ============================================================================
 # 辅助函数
 # ============================================================================
@@ -298,6 +346,14 @@ def calculate_timestamps_backward(events: List[ThreadEvent],
     if n == 0:
         return
     
+    # 防止除零错误
+    if clock_freq <= 0:
+        print("[警告] clock_freq 为 0，无法计算时间戳")
+        # 设置所有事件为 wallclock 时间
+        for event in events:
+            event.timestamp_ns = wallclock_ns
+        return
+    
     # 最后一个事件的时间 = wallclock
     events[-1].timestamp_ns = wallclock_ns
     
@@ -336,6 +392,7 @@ class QstParser:
         self.maindata_header: Optional[MainDataHeader] = None
         
         self.thread_events: List[ThreadEvent] = []
+        self.signal_events: List[SignalKillEvent] = []  # 信号事件
         self.process_info: Dict[int, str] = {}      # pid -> name
         self.thread_info: Dict[Tuple[int, int], str] = {}  # (pid, tid) -> name
         
@@ -396,9 +453,20 @@ class QstParser:
                 self.file_header.get_wallclock_ns()
             )
         
+        # ================================================================
+        # 5. 处理信号事件
+        # ================================================================
+        if self.signal_events and self.file_header:
+            # 计算信号事件时间戳
+            self._calculate_signal_timestamps()
+            
+            # 推断信号发送者
+            self._infer_signal_senders()
+        
         if self.verbose:
             print(f"[解析] 完成:")
             print(f"  线程事件: {len(self.thread_events)}")
+            print(f"  信号事件: {len(self.signal_events)}")
             print(f"  进程数: {len(self.process_info)}")
             print(f"  线程名数: {len(self.thread_info)}")
     
@@ -429,7 +497,10 @@ class QstParser:
         event_count = len(data) // QST_EVENT_SIZE
         
         # 时间跳跃阈值: 10ms (用于检测污染数据)
-        jump_threshold_cycles = int(self.file_header.clock_freq * 0.01) if self.file_header else 192000
+        if self.file_header and self.file_header.clock_freq > 0:
+            jump_threshold_cycles = int(self.file_header.clock_freq * 0.01)
+        else:
+            jump_threshold_cycles = 192000  # 默认值 (假设 19.2MHz)
         
         prev_cycles = None
         filtered_count = 0
@@ -448,7 +519,7 @@ class QstParser:
                         # 发现大的时间跳跃，停止解析
                         # 后续数据可能是 _NTO_TRACE_START 产生的污染数据
                         filtered_count = event_count - i
-                        if self.verbose:
+                        if self.verbose and self.file_header and self.file_header.clock_freq > 0:
                             jump_ms = cycle_diff / self.file_header.clock_freq * 1000
                             print(f"[警告] 在事件 {i} 处检测到 {jump_ms:.2f}ms 的时间跳跃")
                             print(f"[警告] 过滤掉 {filtered_count} 个可能污染的事件")
@@ -467,6 +538,11 @@ class QstParser:
                 elif ext_class == ExternalClass.PROCESS:
                     # 主调度数据中也可能有 PROCESS 事件
                     self._parse_process_event(raw, ext_event)
+                elif raw.internal_class == InternalClass.KER_CALL:
+                    # 内核调用事件 (包括信号事件)
+                    # 内核调用编号在 internal_event 中
+                    kercall_num = raw.internal_event
+                    self._parse_kercall_event(raw, kercall_num, data, i)
     
     def _parse_thread_event(self, raw: RawEvent, state_code: int, 
                             is_vthread: bool) -> None:
@@ -496,6 +572,110 @@ class QstParser:
             self._handle_procdestroy(raw, struct_type)
         elif event_type == 16:  # PROCTHREAD_NAME
             self._handle_procthread_name(raw, struct_type)
+    
+    def _parse_kercall_event(self, raw: RawEvent, kercall_num: int, 
+                             all_data: bytes, current_idx: int) -> None:
+        """解析内核调用事件"""
+        if kercall_num == KernelCall.KER_SIGNAL_KILL:
+            self._handle_signal_kill(raw, all_data, current_idx)
+    
+    def _handle_signal_kill(self, raw: RawEvent, all_data: bytes, 
+                           current_idx: int) -> None:
+        """处理 __KER_SIGNAL_KILL 组合事件 (Wide mode)
+        
+        Wide mode 组合事件布局:
+            COMBINE_BEGIN: timestamp, nd, pid
+            COMBINE_CONT:  timestamp, tid, signo
+            COMBINE_END:   timestamp, code, value
+        
+        所有组合事件的时间戳相同 (用于识别同一事件)。
+        """
+        struct_type = raw.struct_type
+        key = f"signalkill_{raw.cpu_id}_{raw.data[0]}"  # 用时间戳区分
+        
+        if struct_type == StructType.SIMPLE:
+            # Fast mode: 只有 pid 和 signo
+            signo = raw.data[2]
+            # 过滤信号 0 (null signal，仅用于检查进程是否存在)
+            if signo == 0:
+                return
+            event = SignalKillEvent(
+                timestamp_cycles=raw.data[0],
+                cpu_id=raw.cpu_id,
+                target_pid=raw.data[1],
+                signo=signo,
+            )
+            self.signal_events.append(event)
+            if self.verbose:
+                print(f"[信号] Fast mode: PID={event.target_pid}, SIG={event.signal_name}")
+        
+        elif struct_type == StructType.COMBINE_BEGIN:
+            # Wide mode 开始
+            self._combine_buffer[key] = {
+                'timestamp': raw.data[0],
+                'cpu_id': raw.cpu_id,
+                'nd': raw.data[1],
+                'pid': raw.data[2],
+                'tid': 0,
+                'signo': 0,
+                'code': 0,
+                'value': 0,
+            }
+        
+        elif struct_type == StructType.COMBINE_CONT:
+            # Wide mode 继续
+            # 查找匹配的 key (时间戳相同)
+            matching_key = None
+            for k in self._combine_buffer.keys():
+                if k.startswith(f"signalkill_{raw.cpu_id}_"):
+                    buf = self._combine_buffer[k]
+                    if buf['timestamp'] == raw.data[0]:
+                        matching_key = k
+                        break
+            
+            if matching_key:
+                buf = self._combine_buffer[matching_key]
+                buf['tid'] = raw.data[1]
+                buf['signo'] = raw.data[2]
+        
+        elif struct_type == StructType.COMBINE_END:
+            # Wide mode 结束
+            matching_key = None
+            for k in self._combine_buffer.keys():
+                if k.startswith(f"signalkill_{raw.cpu_id}_"):
+                    buf = self._combine_buffer[k]
+                    if buf['timestamp'] == raw.data[0]:
+                        matching_key = k
+                        break
+            
+            if matching_key:
+                buf = self._combine_buffer[matching_key]
+                buf['code'] = raw.data[1]
+                buf['value'] = raw.data[2]
+                
+                # 过滤信号 0 (null signal，仅用于检查进程是否存在)
+                if buf['signo'] == 0:
+                    del self._combine_buffer[matching_key]
+                    return
+                
+                # 创建事件
+                event = SignalKillEvent(
+                    timestamp_cycles=buf['timestamp'],
+                    cpu_id=buf['cpu_id'],
+                    nd=buf['nd'],
+                    target_pid=buf['pid'],
+                    target_tid=buf['tid'],
+                    signo=buf['signo'],
+                    code=buf['code'],
+                    value=buf['value'],
+                )
+                self.signal_events.append(event)
+                
+                if self.verbose:
+                    print(f"[信号] Wide mode: PID={event.target_pid}, TID={event.target_tid}, "
+                          f"SIG={event.signal_name}, code={event.code}, value={event.value}")
+                
+                del self._combine_buffer[matching_key]
     
     def _handle_proccreate_name(self, raw: RawEvent, struct_type: int) -> None:
         """处理 PROCCREATE_NAME 组合事件"""
@@ -573,6 +753,138 @@ class QstParser:
         """获取进程名称"""
         return self.process_info.get(pid, f"unknown:{pid}")
     
+    def _calculate_signal_timestamps(self) -> None:
+        """计算信号事件的时间戳
+        
+        方法: 找到信号事件周围的线程事件，用线性插值计算时间戳。
+        如果没有足够的参考点，使用简单的 cycles 转换。
+        
+        注意: 信号事件可能因为事件处理器延迟而导致记录顺序与实际顺序不一致（小幅度乱序）。
+        对于小幅度乱序（< 1秒），不应视为时间回环。
+        """
+        if not self.file_header or not self.signal_events:
+            return
+        
+        clock_freq = self.file_header.clock_freq
+        wallclock_ns = self.file_header.get_wallclock_ns()
+        
+        # 防止除零错误
+        if clock_freq <= 0:
+            if self.verbose:
+                print("[警告] clock_freq 为 0，无法计算信号事件时间戳")
+            for sig_event in self.signal_events:
+                sig_event.timestamp_ns = wallclock_ns
+            return
+        
+        # 小幅度乱序阈值: 1秒内的 cycles 差值不视为回环
+        small_disorder_threshold = clock_freq  # 1秒的 cycles
+        
+        # 如果有线程事件，用它们作为参考
+        if self.thread_events:
+            # 简化方法：找到最近的线程事件
+            for sig_event in self.signal_events:
+                # 找到 cycles 最接近的线程事件
+                best_thread_event = None
+                best_diff = float('inf')
+                
+                for te in self.thread_events:
+                    diff = abs(te.timestamp_cycles - sig_event.timestamp_cycles)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_thread_event = te
+                
+                if best_thread_event and best_thread_event.timestamp_ns > 0:
+                    # 使用参考事件计算
+                    delta_cycles = sig_event.timestamp_cycles - best_thread_event.timestamp_cycles
+                    
+                    # 处理小幅度乱序: 如果负值在阈值内，视为正常的延迟/乱序，使用参考事件的时间
+                    if delta_cycles < 0 and abs(delta_cycles) < small_disorder_threshold:
+                        # 小幅度乱序，直接使用参考事件的时间戳（或略微调整）
+                        sig_event.timestamp_ns = best_thread_event.timestamp_ns
+                        if self.verbose:
+                            print(f"[信号] 小幅度乱序修正: cycles 差值 = {delta_cycles}")
+                    elif delta_cycles < 0:
+                        # 大幅度负值，可能是真正的时间回环
+                        delta_cycles += MAX_UINT32 + 1
+                        delta_ns = (delta_cycles * 1_000_000_000) // clock_freq
+                        sig_event.timestamp_ns = best_thread_event.timestamp_ns + delta_ns
+                    else:
+                        # 正常情况
+                        delta_ns = (delta_cycles * 1_000_000_000) // clock_freq
+                        sig_event.timestamp_ns = best_thread_event.timestamp_ns + delta_ns
+                else:
+                    # 回退到简单计算
+                    sync_cycles = self.file_header.sync_cycles
+                    delta = sync_cycles - sig_event.timestamp_cycles
+                    if delta < 0 and abs(delta) < small_disorder_threshold:
+                        sig_event.timestamp_ns = wallclock_ns
+                    elif delta < 0:
+                        delta += MAX_UINT32 + 1
+                        sig_event.timestamp_ns = wallclock_ns - (delta * 1_000_000_000) // clock_freq
+                    else:
+                        sig_event.timestamp_ns = wallclock_ns - (delta * 1_000_000_000) // clock_freq
+        else:
+            # 没有线程事件，使用 sync_cycles 作为参考
+            sync_cycles = self.file_header.sync_cycles
+            for sig_event in self.signal_events:
+                delta = sync_cycles - sig_event.timestamp_cycles
+                if delta < 0 and abs(delta) < small_disorder_threshold:
+                    sig_event.timestamp_ns = wallclock_ns
+                elif delta < 0:
+                    delta += MAX_UINT32 + 1
+                    sig_event.timestamp_ns = wallclock_ns - (delta * 1_000_000_000) // clock_freq
+                else:
+                    sig_event.timestamp_ns = wallclock_ns - (delta * 1_000_000_000) // clock_freq
+    
+    def _infer_signal_senders(self) -> None:
+        """从 RUNNING 事件推断信号发送者
+        
+        策略: 找到与 SignalKill 事件同一 CPU、时间最近且之前的 RUNNING 事件。
+        该 RUNNING 事件的 (pid, tid) 即为发送者。
+        """
+        if not self.thread_events or not self.signal_events:
+            return
+        
+        # 按 CPU 分组 RUNNING 事件
+        running_by_cpu: Dict[int, List[ThreadEvent]] = defaultdict(list)
+        for event in self.thread_events:
+            if event.state == "RUNNING":
+                running_by_cpu[event.cpu_id].append(event)
+        
+        # 按时间戳排序
+        for cpu_events in running_by_cpu.values():
+            cpu_events.sort(key=lambda e: e.timestamp_cycles)
+        
+        # 为每个 SignalKill 事件推断发送者
+        for sig_event in self.signal_events:
+            cpu_id = sig_event.cpu_id
+            timestamp = sig_event.timestamp_cycles
+            
+            if cpu_id not in running_by_cpu:
+                continue
+            
+            # 找到时间戳 <= signal 事件的最近 RUNNING 事件
+            candidates = running_by_cpu[cpu_id]
+            best_match = None
+            
+            for running in candidates:
+                # 考虑 cycles 回绕
+                diff = timestamp - running.timestamp_cycles
+                if diff < 0:
+                    diff += MAX_UINT32 + 1
+                
+                # 如果 diff 太大 (超过半个周期)，说明 running 比 signal 晚
+                if diff > MAX_UINT32 // 2:
+                    continue
+                
+                best_match = running
+            
+            if best_match:
+                sig_event.sender_pid = best_match.pid
+                sig_event.sender_tid = best_match.tid
+                if self.verbose:
+                    print(f"[信号] 推断发送者: PID={best_match.pid}, TID={best_match.tid}")
+    
     def print_summary(self) -> None:
         """打印摘要"""
         if not self.file_header:
@@ -586,6 +898,7 @@ class QstParser:
         print(f"版本:          v{self.file_header.version}")
         print(f"时钟频率:      {self.file_header.clock_freq:,} Hz")
         print(f"线程事件数:    {len(self.thread_events):,}")
+        print(f"信号事件数:    {len(self.signal_events):,}")
         print(f"进程数:        {len(self.process_info)}")
         print(f"线程名数:      {len(self.thread_info)}")
         
@@ -636,11 +949,29 @@ class QstParser:
             if len(self.process_info) > 20:
                 print(f"  ... 共 {len(self.process_info)} 个进程")
         
+        # 信号事件列表
+        if self.signal_events:
+            print("\n信号事件:")
+            for i, sig in enumerate(self.signal_events[:10]):
+                sender = f"PID {sig.sender_pid}" if sig.sender_pid else "未知"
+                ts_str = ""
+                if sig.timestamp_ns > 0:
+                    dt = datetime.fromtimestamp(sig.timestamp_ns / 1e9, tz=timezone.utc)
+                    ts_str = dt.strftime('%H:%M:%S.%f')
+                print(f"  [{i+1}] {ts_str} {sig.signal_name} ({sig.signo}): "
+                      f"{sender} → PID {sig.target_pid} TID {sig.target_tid}")
+            if len(self.signal_events) > 10:
+                print(f"  ... 共 {len(self.signal_events)} 个信号事件")
+        
         print("=" * 60 + "\n")
     
     def to_perfetto_json(self, output_path: str) -> None:
         """导出为 Perfetto JSON (Chrome Trace Event Format)"""
-        if not self.file_header or not self.thread_events:
+        if not self.file_header:
+            print("无文件头，无法导出")
+            return
+        
+        if not self.thread_events and not self.signal_events:
             print("无事件可导出")
             return
         
@@ -791,11 +1122,102 @@ class QstParser:
                 "args": {"sort_index": -1000}
             })
         
-        # === 4. 构建输出 ===
+        # === 4. 信号事件 ===
+        for i, sig_event in enumerate(self.signal_events):
+            if sig_event.timestamp_ns <= 0:
+                continue
+            
+            ts_us = sig_event.timestamp_ns // 1000  # 微秒
+            
+            # 在发送者进程上创建 Instant 事件
+            sender_pid = sig_event.sender_pid if sig_event.sender_pid else 0
+            sender_tid = sig_event.sender_tid if sig_event.sender_tid else 0
+            sender_name = self.get_process_name(sender_pid) if sender_pid else "unknown"
+            target_name = self.get_process_name(sig_event.target_pid)
+            
+            trace_events.append({
+                "name": f"{sig_event.signal_name} → {target_name}",
+                "cat": "signal",
+                "ph": "i",  # Instant event
+                "ts": ts_us,
+                "pid": sender_pid,
+                "tid": sender_tid,
+                "s": "t",  # Thread scope
+                "args": {
+                    "signal": sig_event.signal_name,
+                    "signo": sig_event.signo,
+                    "target_pid": sig_event.target_pid,
+                    "target_tid": sig_event.target_tid,
+                    "target_name": target_name,
+                    "code": sig_event.code,
+                    "value": sig_event.value,
+                    "cpu": sig_event.cpu_id,
+                },
+                "cname": "terrible",  # Red color for signals
+            })
+            
+            # 在目标进程上创建 Instant 事件
+            trace_events.append({
+                "name": f"← {sig_event.signal_name} from {sender_name}",
+                "cat": "signal",
+                "ph": "i",
+                "ts": ts_us,
+                "pid": sig_event.target_pid,
+                "tid": sig_event.target_tid if sig_event.target_tid else 0,
+                "s": "t",
+                "args": {
+                    "signal": sig_event.signal_name,
+                    "signo": sig_event.signo,
+                    "sender_pid": sender_pid,
+                    "sender_tid": sender_tid,
+                    "sender_name": sender_name,
+                },
+                "cname": "bad",
+            })
+            
+            # Flow event (可视化信号流向)
+            flow_id = f"sig_{i}_{sig_event.timestamp_cycles}"
+            
+            trace_events.append({
+                "name": sig_event.signal_name,
+                "cat": "signal_flow",
+                "ph": "s",  # Flow start
+                "ts": ts_us,
+                "pid": sender_pid,
+                "tid": sender_tid,
+                "id": flow_id,
+            })
+            
+            trace_events.append({
+                "name": sig_event.signal_name,
+                "cat": "signal_flow",
+                "ph": "f",  # Flow end
+                "ts": ts_us,
+                "pid": sig_event.target_pid,
+                "tid": sig_event.target_tid if sig_event.target_tid else 0,
+                "id": flow_id,
+                "bp": "e",  # Bind to enclosing slice
+            })
+        
+        # === 6. 构建输出 ===
         
         # 计算时间范围
-        first_ts = self.thread_events[0].timestamp_ns
-        last_ts = self.thread_events[-1].timestamp_ns
+        first_ts = 0
+        last_ts = 0
+        
+        if self.thread_events:
+            first_ts = self.thread_events[0].timestamp_ns
+            last_ts = self.thread_events[-1].timestamp_ns
+        elif self.signal_events:
+            timestamps = [e.timestamp_ns for e in self.signal_events if e.timestamp_ns > 0]
+            if timestamps:
+                first_ts = min(timestamps)
+                last_ts = max(timestamps)
+        
+        if first_ts == 0:
+            first_ts = self.file_header.get_wallclock_ns()
+            last_ts = first_ts
+        
         first_dt = datetime.fromtimestamp(first_ts / 1e9, tz=timezone.utc)
         last_dt = datetime.fromtimestamp(last_ts / 1e9, tz=timezone.utc)
         
@@ -808,7 +1230,8 @@ class QstParser:
                 "trace_start_time": first_dt.isoformat(),
                 "trace_end_time": last_dt.isoformat(),
                 "duration_sec": (last_ts - first_ts) / 1e9,
-                "total_events": len(self.thread_events),
+                "total_thread_events": len(self.thread_events),
+                "total_signal_events": len(self.signal_events),
                 "processes": len(self.process_info),
                 "threads_with_names": len(self.thread_info),
                 "clock_freq_hz": self.file_header.clock_freq,
@@ -820,7 +1243,9 @@ class QstParser:
             json.dump(output, f, indent=2, ensure_ascii=False)
         
         print(f"导出完成: {output_path}")
-        print(f"  事件数: {len(trace_events)}")
+        print(f"  Trace 事件数: {len(trace_events)}")
+        print(f"  线程事件数: {len(self.thread_events)}")
+        print(f"  信号事件数: {len(self.signal_events)}")
         print(f"  进程数: {len(seen_processes)}")
         print(f"  线程数: {len(seen_threads)}")
         print(f"  CPU 数: {len(cpu_tracks)}")

@@ -55,19 +55,28 @@ static void signalHandler(int sig) {
  */
 static void printUsage(const char* prog) {
     LOG_INFO("QSchedTracer - QNX 调度追踪器 (飞行记录仪模式)");
-    LOG_INFO("================================================");
+    LOG_INFO("===================================================");
     LOG_INFO("用法: {} [选项]", prog);
     LOG_INFO("");
     LOG_INFO("选项:");
-    LOG_INFO("  -d <秒>    采集时长 (默认: 5, 0=无限)");
+    LOG_INFO("  -d <秒>    采集时长 (默认: 0=无限，Ctrl+C 停止)");
     LOG_INFO("  -o <文件>  输出文件 (默认: trace.qst)");
     LOG_INFO("  -b <MB>    缓冲区大小 (默认: 10)");
+    LOG_INFO("  -s         禁用 SIGKILL 触发落盘");
     LOG_INFO("  -v         详细输出");
     LOG_INFO("  -h         显示帮助");
     LOG_INFO("");
+    LOG_INFO("功能说明:");
+    LOG_INFO("  1. 调度追踪 (Fast mode): 持续采集线程状态变化事件");
+    LOG_INFO("  2. SIGKILL 触发 (Wide mode): 检测到 SIGKILL 时自动落盘");
+    LOG_INFO("     - 落盘后继续采集，直到 Ctrl+C 退出");
+    LOG_INFO("     - 落盘文件名: signal_YYYYMMDD_HHMMSS_NNN.qst");
+    LOG_INFO("");
     LOG_INFO("示例:");
-    LOG_INFO("  {} -d 10 -o trace.qst", prog);
-    LOG_INFO("  {} -d 0 -b 8  # 8MB 缓冲，无限采集", prog);
+    LOG_INFO("  {} -o trace.qst              # 无限采集，Ctrl+C 停止", prog);
+    LOG_INFO("  {} -d 10 -o trace.qst        # 采集 10 秒", prog);
+    LOG_INFO("  {} -d 0 -b 8                 # 8MB 缓冲，无限采集", prog);
+    LOG_INFO("  {} -s -d 30                  # 禁用信号触发，采集 30 秒", prog);
     LOG_INFO("");
     LOG_INFO("解析:");
     LOG_INFO("  python3 qst_parse.py trace.qst -o trace.json");
@@ -83,7 +92,7 @@ int main(int argc, char* argv[]) {
     
     // 参数解析
     int opt;
-    while ((opt = getopt(argc, argv, "d:o:b:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "d:o:b:svh")) != -1) {
         switch (opt) {
         case 'd':
             config.duration_sec = std::atoi(optarg);
@@ -93,6 +102,9 @@ int main(int argc, char* argv[]) {
             break;
         case 'b':
             config.buffer_size = static_cast<size_t>(std::atoi(optarg)) * 1024 * 1024;
+            break;
+        case 's':
+            config.enable_signal_trigger = false;
             break;
         case 'v':
             verbose = true;
