@@ -25,31 +25,26 @@ platform_cc_library(
     visibility = ["//visibility:private"],
 )
 
-
+# ============================================================================
+# nlohmann/json 库 (header-only)
 # ============================================================================
 
 platform_cc_library(
-    name = "local_spdlog",
-    hdrs = glob([
-        "spdlog/include/spdlog/*.h",
-        "spdlog/include/spdlog/**/*.h",
-    ]),
-    includes = [
-        "spdlog/include",
-    ],
-    strip_include_prefix = "spdlog/include",
+    name = "nlohmann_json",
+    hdrs = ["third_party/nlohmann/json.hpp"],
+    includes = ["third_party"],
     visibility = ["//visibility:private"],
 )
 
 # ============================================================================
-# QSchedTracer 核心库
+# QSchedTracer 核心库 - 数据缓冲区
 # ============================================================================
 
 platform_cc_library(
-    name = "qst_ring_buffer",
-    srcs = ["src/ring_buffer.cpp"],
+    name = "qst_data_buffer",
+    srcs = ["src/core/data_buffer.cpp"],
     hdrs = [
-        "include/qst/ring_buffer.hpp",
+        "include/qst/core/data_buffer.hpp",
         "include/qst/types.hpp",
     ],
     copts = [
@@ -63,11 +58,113 @@ platform_cc_library(
     deps = [":qst_log"],
 )
 
+# ============================================================================
+# QSchedTracer 配置模块
+# ============================================================================
+
 platform_cc_library(
-    name = "qst_tracer",
-    srcs = ["src/tracer.cpp"],
+    name = "qst_config",
+    srcs = ["src/config/config_loader.cpp"],
     hdrs = [
-        "include/qst/tracer.hpp",
+        "include/qst/config/types.hpp",
+        "include/qst/config/config_loader.hpp",
+    ],
+    copts = [
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+    ],
+    includes = ["include"],
+    defines = ["BAZEL_BUILD"],
+    deps = [
+        ":qst_log",
+        ":nlohmann_json",
+    ],
+)
+
+# ============================================================================
+# QSchedTracer 触发器模块
+# ============================================================================
+
+platform_cc_library(
+    name = "qst_trigger",
+    srcs = [
+        "src/trigger/kernel_event_trigger.cpp",
+        "src/trigger/trigger_manager.cpp",
+    ],
+    hdrs = [
+        "include/qst/trigger/trigger.hpp",
+        "include/qst/trigger/kernel_event_trigger.hpp",
+        "include/qst/trigger/trigger_manager.hpp",
+    ],
+    copts = [
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+    ],
+    includes = ["include"],
+    defines = ["BAZEL_BUILD"],
+    deps = [
+        ":qst_config",
+        ":qst_log",
+    ],
+)
+
+# ============================================================================
+# QSchedTracer 事件模块
+# ============================================================================
+
+platform_cc_library(
+    name = "qst_event",
+    srcs = ["src/event/event_manager.cpp"],
+    hdrs = ["include/qst/event/event_manager.hpp"],
+    copts = [
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+    ],
+    includes = ["include"],
+    defines = ["BAZEL_BUILD"],
+    deps = [
+        ":qst_config",
+        ":qst_log",
+    ],
+)
+
+# ============================================================================
+# QSchedTracer 数据模块
+# ============================================================================
+
+platform_cc_library(
+    name = "qst_data",
+    srcs = ["src/data/data_manager.cpp"],
+    hdrs = ["include/qst/data/data_manager.hpp"],
+    copts = [
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+    ],
+    includes = ["include"],
+    defines = ["BAZEL_BUILD"],
+    deps = [
+        ":qst_data_buffer",
+        ":qst_log",
+    ],
+)
+
+# ============================================================================
+# QSchedTracer 核心引擎
+# ============================================================================
+
+platform_cc_library(
+    name = "qst_engine",
+    srcs = ["src/core/tracer_engine.cpp"],
+    hdrs = [
+        "include/qst/core/tracer_engine.hpp",
         "include/qst/types.hpp",
     ],
     copts = [
@@ -79,7 +176,11 @@ platform_cc_library(
     includes = ["include"],
     defines = ["BAZEL_BUILD"],
     deps = [
-        ":qst_ring_buffer",
+        ":qst_config",
+        ":qst_data_buffer",
+        ":qst_event",
+        ":qst_trigger",
+        ":qst_data",
         ":qst_log",
     ],
 )
@@ -100,7 +201,8 @@ platform_cc_binary(
     includes = ["include"],
     defines = ["BAZEL_BUILD"],
     deps = [
-        ":qst_tracer",
+        ":qst_engine",
+        ":qst_config",
         ":qst_log",
     ],
 )
@@ -116,6 +218,19 @@ deeproute_release_package(
     ],
     mode = "0755",
     package_dir = "tools",
+)
+
+# ============================================================================
+# 配置包
+# ============================================================================
+
+deeproute_release_package(
+    name = "qst_config_pkg",
+    srcs = [
+        "config/default.json",
+    ],
+    mode = "0644",
+    package_dir = "etc/qst",
 )
 
 # ============================================================================
@@ -142,5 +257,6 @@ deeproute_release_package(
     deps = [
         ":qst_tracer_pkg",
         ":qst_tools",
+        ":qst_config_pkg",
     ],
 )

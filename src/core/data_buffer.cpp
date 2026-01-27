@@ -1,9 +1,9 @@
 /**
- * @file ring_buffer.cpp
- * @brief QSchedTracer - 环形缓冲区实现
+ * @file core/data_buffer.cpp
+ * @brief QSchedTracer - 数据缓冲区实现
  * 
  * @details
- * 单一环形缓冲区实现，针对中断上下文优化。
+ * 环形数据缓冲区实现，针对中断上下文优化。
  * 
  * ## 设计原则
  * 
@@ -32,10 +32,10 @@
  * ```
  * 
  * @author QSchedTracer Team
- * @date 2026-01-21
+ * @date 2026-01-26
  */
 
-#include "qst/ring_buffer.hpp"
+#include "qst/core/data_buffer.hpp"
 #include "qst/log.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -73,39 +73,38 @@ void* alignedAlloc(size_t alignment, size_t size) {
 } // anonymous namespace
 
 // ============================================================================
-// RingBuffer 实现
+// DataBuffer 实现
 // ============================================================================
 
-RingBuffer::RingBuffer(size_t buffer_size) {
-    // 确保 buffer_size 是事件大小的整数倍
-    buffer_size = (buffer_size / constants::EVENT_SIZE) * constants::EVENT_SIZE;
-    if (buffer_size < constants::EVENT_SIZE) {
+DataBuffer::DataBuffer(size_t requested_size) {
+    // 确保 requested_size 是事件大小的整数倍
+    size_t aligned_size = (requested_size / constants::EVENT_SIZE) * constants::EVENT_SIZE;
+    if (aligned_size < constants::EVENT_SIZE) {
         LOG_ERROR("缓冲区太小: {} 字节 (最小需要 {})", 
-                  buffer_size, constants::EVENT_SIZE);
+                  requested_size, constants::EVENT_SIZE);
         throw std::bad_alloc();
     }
     
-    LOG_INFO("初始化环形缓冲区: 大小={} 字节 ({} 个事件)", 
-             buffer_size, buffer_size / constants::EVENT_SIZE);
+    LOG_INFO("初始化数据缓冲区: 大小={} 字节 ({} 个事件)", 
+             aligned_size, aligned_size / constants::EVENT_SIZE);
     
     // 分配对齐内存 (64 字节对齐)
-    buffer_ = static_cast<uint8_t*>(alignedAlloc(64, buffer_size));
+    buffer_ = static_cast<uint8_t*>(alignedAlloc(64, aligned_size));
     if (buffer_ == nullptr) {
-        LOG_ERROR("内存分配失败: {} 字节", buffer_size);
+        LOG_ERROR("内存分配失败: {} 字节", aligned_size);
         throw std::bad_alloc();
     }
     
     // 初始化字段
-    buffer_size_ = buffer_size;
-    capacity_ = buffer_size / constants::EVENT_SIZE;
+    buffer_size_ = aligned_size;
+    capacity_ = aligned_size / constants::EVENT_SIZE;
     
     LOG_INFO("初始化成功: buffer={}, 容量={} 个事件", 
              static_cast<void*>(buffer_), capacity_);
 }
 
-RingBuffer::~RingBuffer() {
-    LOG_INFO("销毁环形缓冲区: 共处理 {} 个事件, {} 次环绕", 
-             static_cast<size_t>(event_count_), static_cast<size_t>(wrap_count_));
+DataBuffer::~DataBuffer() {
+    LOG_DEBUG("销毁数据缓冲区: {} 次环绕", static_cast<size_t>(wrap_count_));
     
     if (buffer_ != nullptr) {
         std::free(buffer_);
@@ -113,28 +112,22 @@ RingBuffer::~RingBuffer() {
     }
 }
 
-RingBuffer::RingBuffer(RingBuffer&& other) noexcept
+DataBuffer::DataBuffer(DataBuffer&& other) noexcept
     : state_(other.state_.load())
     , buffer_(other.buffer_)
     , buffer_size_(other.buffer_size_)
     , capacity_(other.capacity_)
     , write_pos_(other.write_pos_)
-    , event_count_(other.event_count_)
     , wrap_count_(other.wrap_count_)
-    , start_time_(other.start_time_)
-    , end_time_(other.end_time_)
     , clock_freq_(other.clock_freq_)
     , wallclock_sec_(other.wallclock_sec_)
     , wallclock_nsec_(other.wallclock_nsec_)
-    , sync_cycles_(other.sync_cycles_)
-    , total_bytes_(other.total_bytes_)
-    , buffers_received_(other.buffers_received_)
 {
     other.buffer_ = nullptr;
     other.buffer_size_ = 0;
 }
 
-RingBuffer& RingBuffer::operator=(RingBuffer&& other) noexcept {
+DataBuffer& DataBuffer::operator=(DataBuffer&& other) noexcept {
     if (this != &other) {
         if (buffer_ != nullptr) {
             std::free(buffer_);
@@ -145,16 +138,10 @@ RingBuffer& RingBuffer::operator=(RingBuffer&& other) noexcept {
         buffer_size_ = other.buffer_size_;
         capacity_ = other.capacity_;
         write_pos_ = other.write_pos_;
-        event_count_ = other.event_count_;
         wrap_count_ = other.wrap_count_;
-        start_time_ = other.start_time_;
-        end_time_ = other.end_time_;
         clock_freq_ = other.clock_freq_;
         wallclock_sec_ = other.wallclock_sec_;
         wallclock_nsec_ = other.wallclock_nsec_;
-        sync_cycles_ = other.sync_cycles_;
-        total_bytes_ = other.total_bytes_;
-        buffers_received_ = other.buffers_received_;
         
         other.buffer_ = nullptr;
         other.buffer_size_ = 0;
@@ -162,7 +149,7 @@ RingBuffer& RingBuffer::operator=(RingBuffer&& other) noexcept {
     return *this;
 }
 
-void RingBuffer::write(const void* data, size_t nbytes) {
+void DataBuffer::write(const void* data, size_t nbytes) {
     if (buffer_ == nullptr || data == nullptr || nbytes == 0) {
         return;
     }
@@ -197,14 +184,9 @@ void RingBuffer::write(const void* data, size_t nbytes) {
         write_pos_ = second_part;
         wrap_count_++;
     }
-    
-    // 更新统计
-    total_bytes_ += nbytes;
-    event_count_ += nbytes / constants::EVENT_SIZE;
-    buffers_received_++;
 }
 
-std::tuple<void*, size_t, size_t> RingBuffer::getData() const {
+std::tuple<void*, size_t, size_t> DataBuffer::getData() const {
     if (buffer_ == nullptr) {
         return {nullptr, 0, 0};
     }
@@ -226,43 +208,122 @@ std::tuple<void*, size_t, size_t> RingBuffer::getData() const {
     return {buffer_, actual_size, actual_events};
 }
 
-void RingBuffer::reset() {
-    write_pos_ = 0;
-    event_count_ = 0;
-    wrap_count_ = 0;
-    total_bytes_ = 0;
-    buffers_received_ = 0;
-    start_time_ = 0;
-    end_time_ = 0;
+std::unique_ptr<uint8_t[]> DataBuffer::getOrderedData(size_t* out_size, 
+                                                       size_t* out_event_count,
+                                                       uint32_t* out_sync_cycles) const {
+    // 初始化输出参数
+    if (out_size) *out_size = 0;
+    if (out_event_count) *out_event_count = 0;
+    if (out_sync_cycles) *out_sync_cycles = 0;
     
-    // v3: 真实时间同步点
+    if (buffer_ == nullptr) {
+        return nullptr;
+    }
+    
+    size_t pos = write_pos_;
+    size_t wraps = wrap_count_;
+    
+    if (wraps == 0) {
+        // 未环绕：数据已经按顺序 [0, write_pos)
+        size_t data_size = pos;
+        
+        if (data_size == 0) {
+            return nullptr;
+        }
+        
+        size_t event_count = data_size / constants::EVENT_SIZE;
+        
+        // 直接分配 unique_ptr 管理的内存，一次复制
+        auto result = std::make_unique<uint8_t[]>(data_size);
+        std::memcpy(result.get(), buffer_, data_size);
+        
+        // 最后一个事件的 cycles
+        uint32_t sync_cycles = 0;
+        if (event_count > 0) {
+            const QstEvent* last_event = reinterpret_cast<const QstEvent*>(
+                buffer_ + data_size - constants::EVENT_SIZE);
+            sync_cycles = last_event->data[0];
+        }
+        
+        // 设置输出参数
+        if (out_size) *out_size = data_size;
+        if (out_event_count) *out_event_count = event_count;
+        if (out_sync_cycles) *out_sync_cycles = sync_cycles;
+        
+        return result;
+    } else {
+        // 已环绕：需要重组
+        // 原始: [新数据 0..pos) [旧数据 pos..buffer_size)
+        // 输出: [旧数据] [新数据] (按时间顺序)
+        
+        size_t data_size = buffer_size_;
+        size_t old_data_size = buffer_size_ - pos;  // 旧数据 (较早)
+        size_t new_data_size = pos;                  // 新数据 (较晚)
+        size_t event_count = capacity_;
+        
+        // 直接分配 unique_ptr 管理的内存，一次复制 (分两段)
+        auto result = std::make_unique<uint8_t[]>(data_size);
+        
+        // 先复制旧数据 (从 pos 到末尾)
+        if (old_data_size > 0) {
+            std::memcpy(result.get(), buffer_ + pos, old_data_size);
+        }
+        
+        // 再复制新数据 (从开头到 pos)
+        if (new_data_size > 0) {
+            std::memcpy(result.get() + old_data_size, buffer_, new_data_size);
+        }
+        
+        // 最后一个事件的 cycles
+        uint32_t sync_cycles = 0;
+        if (event_count > 0) {
+            // 最后一个事件在新数据的末尾，即原始缓冲区的 pos - EVENT_SIZE
+            size_t last_event_offset;
+            if (pos > 0) {
+                last_event_offset = pos - constants::EVENT_SIZE;
+            } else {
+                last_event_offset = buffer_size_ - constants::EVENT_SIZE;
+            }
+            const QstEvent* last_event = reinterpret_cast<const QstEvent*>(
+                buffer_ + last_event_offset);
+            sync_cycles = last_event->data[0];
+        }
+        
+        // 设置输出参数
+        if (out_size) *out_size = data_size;
+        if (out_event_count) *out_event_count = event_count;
+        if (out_sync_cycles) *out_sync_cycles = sync_cycles;
+        
+        return result;
+    }
+}
+
+void DataBuffer::reset() {
+    write_pos_ = 0;
+    wrap_count_ = 0;
     wallclock_sec_ = 0;
     wallclock_nsec_ = 0;
-    sync_cycles_ = 0;
     
     LOG_INFO("缓冲区已重置");
 }
 
-void RingBuffer::dumpState() const {
+void DataBuffer::dumpState() const {
     std::fprintf(stderr, "\n");
     std::fprintf(stderr, "╔══════════════════════════════════════════════════╗\n");
-    std::fprintf(stderr, "║              环形缓冲区状态                      ║\n");
+    std::fprintf(stderr, "║              数据缓冲区状态                      ║\n");
     std::fprintf(stderr, "╠══════════════════════════════════════════════════╣\n");
     std::fprintf(stderr, "║ 缓冲区地址:    %-20p           ║\n", static_cast<void*>(buffer_));
     std::fprintf(stderr, "║ 缓冲区大小:    %-15zu 字节        ║\n", buffer_size_);
     std::fprintf(stderr, "║ 事件容量:      %-15zu 个          ║\n", capacity_);
     std::fprintf(stderr, "║ 写入位置:      %-15zu 字节        ║\n", static_cast<size_t>(write_pos_));
-    std::fprintf(stderr, "║ 事件数量:      %-15zu 个          ║\n", static_cast<size_t>(event_count_));
     std::fprintf(stderr, "║ 环绕次数:      %-15zu 次          ║\n", static_cast<size_t>(wrap_count_));
-    std::fprintf(stderr, "║ 总写入字节:    %-15zu 字节        ║\n", static_cast<size_t>(total_bytes_));
-    std::fprintf(stderr, "║ 收到 Buffer:   %-15zu 个          ║\n", static_cast<size_t>(buffers_received_));
     std::fprintf(stderr, "║ 状态:          %-15d               ║\n", static_cast<int>(state_.load()));
     std::fprintf(stderr, "╠══════════════════════════════════════════════════╣\n");
-    std::fprintf(stderr, "║ 真实时间同步点 (v3)                              ║\n");
+    std::fprintf(stderr, "║ 时间同步点                                       ║\n");
     std::fprintf(stderr, "║ Wallclock:     %lld.%09lld                ║\n", 
             static_cast<long long>(wallclock_sec_), static_cast<long long>(wallclock_nsec_));
-    std::fprintf(stderr, "║ Sync Cycles:   %-20llu           ║\n", 
-            static_cast<unsigned long long>(sync_cycles_));
+    std::fprintf(stderr, "║ Clock Freq:    %-20llu Hz        ║\n", 
+            static_cast<unsigned long long>(clock_freq_));
     std::fprintf(stderr, "╚══════════════════════════════════════════════════╝\n");
     std::fprintf(stderr, "\n");
 }

@@ -87,7 +87,7 @@ class ExternalClass(IntEnum):
     PROCESS = 3
     CONTROL = 4
 
-# 线程状态
+# 线程状态（来自 sys/states.h）
 THREAD_STATES = {
     0: "DEAD", 1: "RUNNING", 2: "READY", 3: "STOPPED",
     4: "SEND", 5: "RECEIVE", 6: "REPLY", 7: "STACK",

@@ -16,7 +16,7 @@
 
 cmake_minimum_required(VERSION 3.14)
 project(QSchedTracer
-    VERSION 1.0.0
+    VERSION 2.0.0
     DESCRIPTION "QNX Scheduler Tracer - Flight Recorder Mode"
     LANGUAGES CXX
 )
@@ -29,6 +29,12 @@ project(QSchedTracer
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/spdlog/include/spdlog/spdlog.h")
     message(FATAL_ERROR "spdlog library not found in ${CMAKE_SOURCE_DIR}/spdlog/
     Please ensure spdlog is placed in the project's spdlog/ directory")
+endif()
+
+# 检查 nlohmann/json 库
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/nlohmann/json.hpp")
+    message(FATAL_ERROR "nlohmann/json library not found in ${CMAKE_SOURCE_DIR}/third_party/nlohmann/
+    Please ensure nlohmann/json.hpp is placed in the project's third_party/nlohmann/ directory")
 endif()
 
 # ============================================================================
@@ -79,13 +85,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 else()
     # 非 QNX 系统的编译选项
-add_compile_options(
-    -Wall
-    -Wextra
-    -Wpedantic
-    -O2
-    -g
-)
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wpedantic
+        -O2
+        -g
+    )
 endif()
 
 # ============================================================================
@@ -94,14 +100,31 @@ endif()
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/spdlog/include
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
 # ============================================================================
 # 源文件
 # ============================================================================
 set(TRACER_SOURCES
-    src/ring_buffer.cpp
-    src/tracer.cpp
+    # 核心模块
+    src/core/data_buffer.cpp
+    src/core/tracer_engine.cpp
+    
+    # 配置模块
+    src/config/config_loader.cpp
+    
+    # 触发器模块
+    src/trigger/kernel_event_trigger.cpp
+    src/trigger/trigger_manager.cpp
+    
+    # 事件模块
+    src/event/event_manager.cpp
+    
+    # 数据模块
+    src/data/data_manager.cpp
+    
+    # 主入口
     src/main.cpp
 )
 
@@ -137,6 +160,11 @@ install(FILES tools/qst_parse.py
                 WORLD_READ WORLD_EXECUTE
 )
 
+install(FILES config/default.json
+    DESTINATION etc/qst
+    RENAME qst_config.json
+)
+
 # ============================================================================
 # 打印配置信息
 # ============================================================================
@@ -151,4 +179,3 @@ message(STATUS "║ 处理器:      ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "║ 编译器:      ${CMAKE_CXX_COMPILER}")
 message(STATUS "╚══════════════════════════════════════════════════════════╝")
 message(STATUS "")
-

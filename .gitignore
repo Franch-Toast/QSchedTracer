@@ -29,7 +29,7 @@ qst_demo
 qst_parse
 
 # ============================================
-# 运行时产生的文件
+# 运行时产生的文件和配置文件
 # ============================================
 # Trace 数据文件
 *.qst
@@ -39,6 +39,8 @@ sched_trace.bin
 # Chrome/Perfetto 格式输出
 *.json
 trace.json
+
+!config/*.json
 
 # Core dump 文件
 *.core

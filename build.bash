@@ -10,6 +10,7 @@
 # 前提条件:
 #   - QNX 7.1 SDP 工具链已安装在 /sandbox/toolchains_qnx/
 #   - spdlog 日志库已集成在项目的 spdlog/ 目录
+#   - nlohmann/json 库已集成在项目的 third_party/nlohmann/ 目录
 #
 # 用法:
 #   ./build.bash              # 编译项目
@@ -22,7 +23,7 @@
 # 部署:
 #   scp build/qnx_aarch64/qst_tracer target:/path/to/
 #   # 在 QNX 目标机上:
-#   ./qst_tracer -d 10 -o trace.qst
+#   ./qst_tracer -c config.json
 #
 #==============================================================================
 
@@ -46,14 +47,9 @@ BUILD_DIR="$SCRIPT_DIR/build/qnx_aarch64"
 SRC_DIR="$SCRIPT_DIR/src"
 INC_DIR="$SCRIPT_DIR/include"
 SPDLOG_INC_DIR="$SCRIPT_DIR/spdlog/include"
+THIRD_PARTY_DIR="$SCRIPT_DIR/third_party"
 
 # 编译标志
-# -D_QNX_SOURCE      : 启用 QNX 特定 API
-# -D__QNXNTO__       : 标识 QNX Neutrino 平台
-# -std=c++17         : 使用 C++17 标准
-# -stdlib=libc++     : 使用 libc++ 标准库 (QNX 默认)
-# -O2                : 优化级别 2
-# -Wall -Wextra      : 启用警告
 CXXFLAGS="-D_QNX_SOURCE -D__QNXNTO__ -std=c++17 -stdlib=libc++ -O2 -Wall -Wextra"
 
 # 链接标志
@@ -103,6 +99,12 @@ if [ ! -d "$SPDLOG_INC_DIR" ]; then
     exit 1
 fi
 
+if [ ! -f "$THIRD_PARTY_DIR/nlohmann/json.hpp" ]; then
+    echo "❌ 错误: nlohmann/json 未找到: $THIRD_PARTY_DIR/nlohmann/json.hpp"
+    echo "   请将 nlohmann/json.hpp 放置在项目的 third_party/nlohmann/ 目录"
+    exit 1
+fi
+
 # ============================================================================
 # 编译
 # ============================================================================
@@ -116,31 +118,45 @@ echo "║       QSchedTracer 编译 - QNX 7.1 aarch64                ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║ 编译器: $(basename $CXX)"
 echo "║ C++标准: C++17"
-echo "║ 日志库: spdlog 1.17.0 (header-only)"
+echo "║ 日志库: spdlog (header-only)"
+echo "║ JSON库: nlohmann/json (header-only)"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
 # Include 路径
-INC_FLAGS="-I$INC_DIR -I$SPDLOG_INC_DIR"
+INC_FLAGS="-I$INC_DIR -I$SPDLOG_INC_DIR -I$THIRD_PARTY_DIR"
 
-# 编译源文件
-echo "[1/3] 📦 编译 ring_buffer.cpp..."
-$CXX $CXXFLAGS $INC_FLAGS -c "$SRC_DIR/ring_buffer.cpp" -o "$BUILD_DIR/ring_buffer.o"
+# 源文件列表
+SOURCES=(
+    "core/data_buffer.cpp"
+    "core/tracer_engine.cpp"
+    "config/config_loader.cpp"
+    "trigger/kernel_event_trigger.cpp"
+    "trigger/trigger_manager.cpp"
+    "event/event_manager.cpp"
+    "data/data_manager.cpp"
+    "main.cpp"
+)
 
-echo "[2/3] 📦 编译 tracer.cpp..."
-$CXX $CXXFLAGS $INC_FLAGS -c "$SRC_DIR/tracer.cpp" -o "$BUILD_DIR/tracer.o"
+# 编译每个源文件
+OBJECTS=""
+TOTAL=${#SOURCES[@]}
+COUNT=0
 
-echo "[3/3] 📦 编译 main.cpp..."
-$CXX $CXXFLAGS $INC_FLAGS -c "$SRC_DIR/main.cpp" -o "$BUILD_DIR/main.o"
+for src in "${SOURCES[@]}"; do
+    COUNT=$((COUNT + 1))
+    basename=$(basename "$src" .cpp)
+    
+    echo "[$COUNT/$TOTAL] 📦 编译 $src..."
+    $CXX $CXXFLAGS $INC_FLAGS -c "$SRC_DIR/$src" -o "$BUILD_DIR/${basename}.o"
+    
+    OBJECTS="$OBJECTS $BUILD_DIR/${basename}.o"
+done
 
 # 链接
 echo ""
 echo "[链接] 🔗 生成 qst_tracer..."
-$CXX -stdlib=libc++ $LDFLAGS \
-    "$BUILD_DIR/ring_buffer.o" \
-    "$BUILD_DIR/tracer.o" \
-    "$BUILD_DIR/main.o" \
-    -o "$BUILD_DIR/qst_tracer"
+$CXX -stdlib=libc++ $LDFLAGS $OBJECTS -o "$BUILD_DIR/qst_tracer"
 
 # ============================================================================
 # 完成
@@ -163,5 +179,7 @@ echo "📋 部署命令:"
 echo "   scp $BUILD_DIR/qst_tracer target:/path/to/"
 echo ""
 echo "📋 运行命令 (在 QNX 目标机上):"
-echo "   ./qst_tracer -d 10 -o trace.qst"
+echo "   ./qst_tracer                          # 使用默认配置"
+echo "   ./qst_tracer -c config.json           # 使用指定配置"
+echo "   ./qst_tracer -b 16                    # 16MB 缓冲"
 echo ""

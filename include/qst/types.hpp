@@ -96,11 +96,15 @@ constexpr uint32_t PROCINFO_MAGIC = 0x50494E46;
 /** 主调度数据头魔数 "MAIN" */
 constexpr uint32_t MAINDATA_MAGIC = 0x4D41494E;
 
-/** Pulse 消息代码 */
-constexpr int PULSE_CODE_BUFFER_READY = 1;
+/** Pulse 消息代码 (1-127 为用户定义，负数保留给系统) */
+constexpr int8_t PULSE_CODE_BUFFER_READY = 1;  ///< 内核 buffer 已复制到用户缓冲区，实际这里没有作用，只是保留做扩展的
+constexpr int8_t PULSE_CODE_TRIGGER      = 2;  ///< 触发器触发，需要落盘
+constexpr int8_t PULSE_CODE_STOP         = 3;  ///< 请求停止采集
 
-/** MsgReceive 超时时间 (100ms) */
-constexpr uint64_t MSG_TIMEOUT_NS = 100 * 1000 * 1000ULL;
+/** 触发源标识 (通过 pulse.value.sival_int 传递) */
+constexpr int32_t TRIGGER_SOURCE_KERNEL_EVENT = 1;  ///< 内核事件触发
+constexpr int32_t TRIGGER_SOURCE_TOPIC        = 2;  ///< Topic 订阅触发 (预留)
+constexpr int32_t TRIGGER_SOURCE_SIGNAL       = 3;  ///< 信号触发 (优雅退出)
 
 } // namespace constants
 

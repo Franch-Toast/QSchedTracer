@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "buffer": {
+    "size_mb": 10
+  },
+  "scheduling": {
+    "enabled": true,
+    "mode": "fast"
+  },
+  "extra_events": {
+    "classes": [],
+    "specific_events": [
+      {
+        "class": 3,
+        "event": 26,
+        "mode": "wide",
+        "comment": "KERCALLENTER: __KER_SIGNAL_KILL (外部 class=3 用于 TraceEvent API)"
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "type": "kernel_event",
+      "class": 2,
+      "event": 26,
+      "condition": {
+        "data_index": 3,
+        "op": "eq",
+        "value": 9
+      },
+      "comment": "内部 class=2 (_TRACE_KER_CALL_C), event=26 (__KER_SIGNAL_KILL), data[3]=signo, 9=SIGKILL"
+    }
+  ]
+}
+
