@@ -47,14 +47,13 @@ public:
     DataManager& operator=(const DataManager&) = delete;
     
     /**
-     * @brief 采集进程/线程信息
+     * @brief 设置进程/线程信息缓冲区
      * 
-     * 在落盘前调用，通过 _NTO_TRACE_START 获取当前进程/线程名称。
-     * 使用独立缓冲区避免污染主数据。
+     * 由 TracerEngine 采集后传入。
      * 
-     * @return 0 成功, -1 失败
+     * @param buffer 包含进程/线程信息的缓冲区
      */
-    int collectProcessInfo();
+    void setProcInfoBuffer(DataBuffer&& buffer);
     
     /**
      * @brief 保存数据到文件

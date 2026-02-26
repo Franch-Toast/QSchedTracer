@@ -84,11 +84,11 @@ constexpr size_t EVENT_SIZE = sizeof(QstEvent);
 /** 默认缓冲区大小 (10MB) */
 constexpr size_t DEFAULT_BUFFER_SIZE = 10 * 1024 * 1024;
 
-/** 内核 trace buffer 数量 (推荐值) */
-constexpr int KERNEL_BUFFER_COUNT = 16;
+/** 内核 trace buffer 数量 (推荐值)，从16-->32修改为tracelogger的默认值 */
+constexpr int KERNEL_BUFFER_COUNT = 32;
 
-/** 进程/线程信息缓冲区大小 (1MB) */
-constexpr size_t PROCINFO_BUFFER_SIZE = 1 * 1024 * 1024;
+/** 进程/线程信息缓冲区大小 (3MB) */
+constexpr size_t PROCINFO_BUFFER_SIZE = 3 * 1024 * 1024;
 
 /** 进程/线程信息头魔数 "PINF" */
 constexpr uint32_t PROCINFO_MAGIC = 0x50494E46;

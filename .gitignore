@@ -10,6 +10,7 @@ build/
 *.a
 *.so
 *.so.*
+dist/
 
 cmake_build/
 
@@ -39,12 +40,18 @@ sched_trace.bin
 # Chrome/Perfetto 格式输出
 *.json
 trace.json
+*.perfetto
 
 !config/*.json
 
 # Core dump 文件
 *.core
 core.*
+
+# 临时的文件和目录
+build_executable.sh
+qst_parser_entry.py
+qst_parser.spec
 
 # ============================================
 # IDE 和编辑器

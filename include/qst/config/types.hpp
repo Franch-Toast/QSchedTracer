@@ -75,7 +75,6 @@ struct SchedulingConfig {
 struct EventClassConfig {
     int class_id = 0;               ///< QNX 事件类 ID
     EventMode mode = EventMode::Fast;  ///< 事件模式
-    std::string comment;            ///< 注释 (仅供人阅读)
 };
 
 /**
@@ -85,7 +84,6 @@ struct SpecificEventConfig {
     int class_id = 0;               ///< 事件类 ID
     int event_id = 0;               ///< 事件 ID
     EventMode mode = EventMode::Wide;  ///< 事件模式
-    std::string comment;            ///< 注释
 };
 
 /**
@@ -125,8 +123,6 @@ struct TriggerConfig {
     
     // timeout 类型参数 (未来)
     int interval_sec = 0;           ///< 定时间隔 (秒)
-    
-    std::string comment;            ///< 注释
 };
 
 /**

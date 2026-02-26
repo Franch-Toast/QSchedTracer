@@ -130,9 +130,32 @@ private:
     void handleTrigger();
     
     /**
+     * @brief 采集进程/线程信息
+     * 
+     * 在落盘前调用，通过 _NTO_TRACE_START 获取当前进程/线程名称。
+     */
+    void collectProcessInfo();
+    
+    /**
      * @brief 打印统计信息
      */
     void printStats() const;
+    
+    /**
+     * @brief 处理单个 buffer pulse 并复制数据
+     * @param idx buffer 索引
+     * @param target 目标缓冲区
+     * @return 复制的事件数，0 表示无数据或错误
+     */
+    size_t copyBufferData(int idx, DataBuffer& target);
+    
+    /**
+     * @brief 接收并处理所有待处理的 buffer pulse
+     * @param target 目标缓冲区
+     * @param max_count 最大处理数量（0=无限制）
+     * @return 处理的 pulse 数量
+     */
+    size_t drainPendingPulses(DataBuffer& target, size_t max_count = 0);
 
     /**
      * @brief 中断回调函数
@@ -156,8 +179,11 @@ private:
     // 触发标志 (在中断上下文设置)
     static volatile sig_atomic_t trigger_flag_;
     
+    // 挂起的触发标志 (中断中设置，用户态检查)
+    volatile bool pending_trigger_{false};
+    
     // 统计
-    volatile uint64_t buffers_processed_{0};
+    volatile uint64_t buffers_processed_{0};   ///< 中断触发次数
     
     // 内核 trace 相关
     paddr_t kernel_paddr_{0};
@@ -177,9 +203,6 @@ private:
     // 全局实例指针 (用于静态回调)
     static TracerEngine* instance_;
 };
-
-// 全局活动缓冲区指针 (用于中断回调写入)
-extern DataBuffer* g_active_buffer;
 
 } // namespace core
 } // namespace qst

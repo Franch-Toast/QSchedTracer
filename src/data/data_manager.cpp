@@ -8,9 +8,8 @@
 
 #include "qst/data/data_manager.hpp"
 #include "qst/log.hpp"
+#include "qst/types.hpp"
 
-#include <sys/trace.h>
-#include <sys/neutrino.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
@@ -18,12 +17,6 @@
 #include <ctime>
 
 namespace qst {
-
-// 全局活动缓冲区指针 (定义在 tracer_engine.cpp)
-namespace core {
-    extern DataBuffer* g_active_buffer;
-}
-
 namespace data {
 
 DataManager::DataManager(DataBuffer& data_buffer)
@@ -49,53 +42,18 @@ std::string DataManager::generateFilename() {
     return filename;
 }
 
-int DataManager::collectProcessInfo() {
-    LOG_INFO("采集进程/线程信息 (使用独立缓冲区)...");
-    
-    // 1. 创建临时 DataBuffer 用于接收进程/线程信息
-    DataBuffer temp_db(constants::PROCINFO_BUFFER_SIZE);
-    
-    // 2. ★ 关键：切换 core::g_active_buffer 到临时缓冲区
-    //    这样 bufferReadyHandler 会将数据写入 temp_db 而不是主缓冲区
-    DataBuffer* saved_buffer = core::g_active_buffer;
-    core::g_active_buffer = &temp_db;
-    
-    // 3. 启动 trace (会注入 PROCDESTROY 事件)
-    LOG_DEBUG("调用 _NTO_TRACE_START 注入进程/线程信息...");
-    int ret = TraceEvent(_NTO_TRACE_START);
-    if (ret != 0) {
-        LOG_WARN("_NTO_TRACE_START 返回: {}", ret);
-    }
-    
-    // 4. 短暂等待，让内核有时间注入事件
-    usleep(15000);
-    
-    // 5. 停止 trace
-    TraceEvent(_NTO_TRACE_STOP);
-    
-    // 6. Flush 内核缓冲区，确保所有数据都到达用户态
-    TraceEvent(_NTO_TRACE_FLUSHBUFFER);
-    usleep(10000);
-    
-    // 7. ★ 关键：恢复 core::g_active_buffer 到主缓冲区
-    core::g_active_buffer = saved_buffer;
-    
-    // 8. 使用 getOrderedData() 获取顺序数据 (直接返回智能指针，只需一次内存拷贝)
+void DataManager::setProcInfoBuffer(DataBuffer&& buffer) {
+    // 从传入的缓冲区获取有序数据
     uint32_t sync_cycles = 0;
-    procinfo_buffer_ = temp_db.getOrderedData(&procinfo_size_, &procinfo_count_, &sync_cycles);
+    procinfo_buffer_ = buffer.getOrderedData(&procinfo_size_, &procinfo_count_, &sync_cycles);
     
     if (procinfo_buffer_) {
-        LOG_INFO("采集到 {} 字节进程/线程信息 ({} 个事件)", 
-                 procinfo_size_, procinfo_count_);
+        LOG_INFO("进程/线程信息: {} 字节, {} 个事件", procinfo_size_, procinfo_count_);
     } else {
         procinfo_size_ = 0;
         procinfo_count_ = 0;
         LOG_WARN("未采集到进程/线程信息");
     }
-    
-    LOG_INFO("进程/线程信息采集完成 (主调度数据未受影响)");
-    
-    return 0;
 }
 
 int DataManager::save() {

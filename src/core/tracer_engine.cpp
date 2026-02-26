@@ -32,9 +32,6 @@ TracerEngine* TracerEngine::instance_ = nullptr;
 // 触发标志
 volatile sig_atomic_t TracerEngine::trigger_flag_ = 0;
 
-// 全局活动缓冲区指针
-DataBuffer* g_active_buffer = nullptr;
-
 // ============================================================================
 // 构造和析构
 // ============================================================================
@@ -44,7 +41,6 @@ TracerEngine::TracerEngine(const config::TracerConfig& config)
     , data_buffer_(config.buffer_size_mb * 1024 * 1024)
 {
     instance_ = this;
-    g_active_buffer = &data_buffer_;
     
     // 初始化事件数据结构
     std::memset(&event_data_, 0, sizeof(event_data_));
@@ -55,7 +51,6 @@ TracerEngine::TracerEngine(const config::TracerConfig& config)
 TracerEngine::~TracerEngine() {
     cleanup();
     instance_ = nullptr;
-    g_active_buffer = nullptr;
 }
 
 // ============================================================================
@@ -87,7 +82,6 @@ int TracerEngine::run() {
     LOG_INFO("╠══════════════════════════════════════════════════════╣");
     LOG_INFO("║ 缓冲区:      {} MB", config_.buffer_size_mb);
     LOG_INFO("║ CPU 数量:    {}", getCpuCount());
-    LOG_INFO("║ 调度追踪:    {}", config_.scheduling.enabled ? "启用" : "禁用");
     LOG_INFO("║ 触发器数:    {}", config_.triggers.size());
     LOG_INFO("╚══════════════════════════════════════════════════════╝");
     
@@ -112,9 +106,7 @@ int TracerEngine::run() {
     
     // 落盘前采集进程/线程信息
     LOG_INFO("准备落盘，采集进程/线程信息...");
-    if (data_manager_->collectProcessInfo() != 0) {
-        LOG_WARN("采集进程/线程信息失败，将使用未知名称");
-    }
+    collectProcessInfo();
     
     // 保存数据
     int ret = data_manager_->save();
@@ -162,49 +154,31 @@ int TracerEngine::initialize() {
 // ============================================================================
 
 const struct sigevent* TracerEngine::bufferReadyHandler(int info) {
-    if (instance_ == nullptr || g_active_buffer == nullptr) {
+    if (instance_ == nullptr) {
         return nullptr;
     }
     
     // 提取 buffer 索引
     int idx = _TRACE_GET_BUFFNUM(info);
     
-    if (idx < 0 || idx >= constants::KERNEL_BUFFER_COUNT || 
-        instance_->kernel_buffers_ == nullptr) {
+    if (idx < 0 || idx >= constants::KERNEL_BUFFER_COUNT) {
         return nullptr;
     }
-    
-    // 获取内核 buffer
-    tracebuf_t* kbuf = &instance_->kernel_buffers_[idx];
-    uint32_t num_events = kbuf->h.num_events;
-    
-    if (num_events == 0) {
-        return nullptr;
-    }
-    
-    // 限制事件数量
-    constexpr uint32_t MAX_TRACE_EVENTS = 1024;
-    if (num_events > MAX_TRACE_EVENTS) {
-        num_events = MAX_TRACE_EVENTS;
-    }
-    
-    // 核心优化: 使用 memcpy 整块复制到活动缓冲区
-    size_t nbytes = num_events * sizeof(traceevent_t);
-    g_active_buffer->write(kbuf->data, nbytes);
     
     // 更新统计
     instance_->buffers_processed_++;
     
+    // 设置 pulse 的 value 为 buffer index
+    instance_->buffer_pulse_event_.sigev_value.sival_int = idx;
+    
     // 检查触发标志
-    // 如果触发器在 eventTriggerHandler 中设置了标志，发送触发 pulse
     if (trigger_flag_) {
-        trigger_flag_ = 0;  // 清除标志
-        return &instance_->trigger_pulse_event_;
+        trigger_flag_ = 0;
+        instance_->pending_trigger_ = true;
     }
     
-    // 正常情况下不发送 pulse (减少主线程唤醒次数)
-    // 只有在触发时才唤醒主线程
-    return nullptr;
+    // 发送 pulse 通知用户态线程处理
+    return &instance_->buffer_pulse_event_;
 }
 
 // ============================================================================
@@ -299,7 +273,8 @@ int TracerEngine::setupKernelTrace() {
     LOG_DEBUG("映射成功: {} 字节 @ {}", total_size, static_cast<void*>(kernel_buffers_));
     
     // 5. 创建 channel 和 connection 用于 pulse
-    channel_id_ = ChannelCreate(0);
+    // 设置固定优先级，避免被其他高优先级线程抢占，这点必须设置，会影响线程的优先级设置
+    channel_id_ = ChannelCreate(0 | _NTO_CHF_FIXED_PRIORITY);
     if (channel_id_ == -1) {
         LOG_ERROR("创建 channel 失败: {}", strerror(errno));
         return -1;
@@ -403,8 +378,53 @@ void TracerEngine::cleanup() {
 // 采集循环
 // ============================================================================
 
+// ============================================================================
+// Buffer 数据复制辅助方法
+// ============================================================================
+
+size_t TracerEngine::copyBufferData(int idx, DataBuffer& target) {
+    if (idx < 0 || idx >= constants::KERNEL_BUFFER_COUNT || kernel_buffers_ == nullptr) {
+        return 0;
+    }
+    
+    tracebuf_t* kbuf = &kernel_buffers_[idx];
+    uint32_t num_events = kbuf->h.num_events;
+    
+    if (num_events == 0 || num_events > 1024) {
+        return 0;
+    }
+    
+    size_t nbytes = num_events * sizeof(traceevent_t);
+    target.write(kbuf->data, nbytes);
+    return num_events;
+}
+
+size_t TracerEngine::drainPendingPulses(DataBuffer& target, size_t max_count) {
+    struct _pulse pulse;
+    size_t count = 0;
+    
+    while (max_count == 0 || count < max_count) {
+        // 设置超时，避免无限阻塞
+        struct sigevent timeout_event;
+        SIGEV_UNBLOCK_INIT(&timeout_event);
+        TimerTimeout(CLOCK_MONOTONIC, _NTO_TIMEOUT_RECEIVE, &timeout_event, nullptr, nullptr);
+        
+        int rcvid = MsgReceive(channel_id_, &pulse, sizeof(pulse), nullptr);
+        if (rcvid != 0) {
+            break;  // 超时或错误
+        }
+        
+        if (pulse.code == constants::PULSE_CODE_BUFFER_READY) {
+            copyBufferData(pulse.value.sival_int, target);
+            count++;
+        }
+    }
+    
+    return count;
+}
+
 void TracerEngine::runLoop() {
-    LOG_INFO("开始采集 (纯阻塞模式)...");
+    LOG_INFO("开始采集...");
     LOG_INFO("等待触发信号或停止请求...");
     
     // 启动 trace
@@ -414,54 +434,45 @@ void TracerEngine::runLoop() {
     struct _pulse pulse;
     bool running = true;
     
-    // 纯阻塞模式：完全阻塞等待 pulse，不消耗 CPU
-    // 只有在以下情况才会被唤醒：
-    // 1. PULSE_CODE_TRIGGER - 触发器触发，需要落盘
-    // 2. PULSE_CODE_STOP - 请求停止采集
     while (running) {
-        // 完全阻塞等待 pulse，无超时
         int rcvid = MsgReceive(channel_id_, &pulse, sizeof(pulse), nullptr);
         
-        if (rcvid == 0) {  // rcvid == 0 表示收到 pulse
+        if (rcvid == 0) {
             switch (pulse.code) {
-                case constants::PULSE_CODE_TRIGGER:
-                    // 触发器触发，执行落盘
-                    LOG_INFO("收到触发 pulse (source={})", pulse.value.sival_int);
-                    handleTrigger();
+                case constants::PULSE_CODE_BUFFER_READY:
+                    // 收到 buffer ready pulse，复制数据到主缓冲区
+                    copyBufferData(pulse.value.sival_int, data_buffer_);
+                    
+                    // 检查是否有挂起的触发
+                    if (pending_trigger_) {
+                        pending_trigger_ = false;
+                        handleTrigger();
+                    }
                     break;
                     
                 case constants::PULSE_CODE_STOP:
-                    // 请求停止
                     LOG_INFO("收到停止 pulse");
                     running = false;
                     break;
                     
-                case constants::PULSE_CODE_BUFFER_READY:
-                    // Buffer ready (正常情况下不会收到，因为已改为不发送)
-                    // 保留此 case 以兼容可能的扩展
-                    break;
-                    
                 default:
-                    // 忽略未知 pulse
                     break;
             }
         }
-        // rcvid > 0 表示收到消息，此处不处理
-        // rcvid == -1 表示错误
     }
     
     // 停止采集
     TraceEvent(_NTO_TRACE_STOP);
     
-    // 获取系统时间 (作为最后一个事件的时间同步点)
+    // 获取系统时间
     struct timespec wall_time;
     clock_gettime(CLOCK_REALTIME, &wall_time);
     
-    // 刷新缓冲区
+    // 刷新缓冲区并处理剩余 pulse
     TraceEvent(_NTO_TRACE_FLUSHBUFFER);
-    usleep(10000);
+    drainPendingPulses(data_buffer_);
     
-    // 保存时间戳 (用于计算真实时间)
+    // 保存时间戳
     data_buffer_.setWallclockSec(wall_time.tv_sec);
     data_buffer_.setWallclockNsec(wall_time.tv_nsec);
     
@@ -485,16 +496,16 @@ void TracerEngine::handleTrigger() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     
-    // 3. 刷新缓冲区
+    // 3. 刷新缓冲区并处理剩余 pulse
     TraceEvent(_NTO_TRACE_FLUSHBUFFER);
-    usleep(10000);
+    drainPendingPulses(data_buffer_);
     
     // 4. 保存时间戳
     data_buffer_.setWallclockSec(ts.tv_sec);
     data_buffer_.setWallclockNsec(ts.tv_nsec);
     
     // 5. 采集进程信息并保存
-    data_manager_->collectProcessInfo();
+    collectProcessInfo();
     data_manager_->save();
     
     LOG_INFO("保存到: {}", data_manager_->lastFilename());
@@ -510,6 +521,45 @@ void TracerEngine::handleTrigger() {
 }
 
 // ============================================================================
+// 采集进程/线程信息
+// ============================================================================
+
+void TracerEngine::collectProcessInfo() {
+    LOG_INFO("采集进程/线程信息...");
+    
+    // 创建临时缓冲区 预留3MB空间，应该完全足够了
+    DataBuffer temp_buffer(constants::PROCINFO_BUFFER_SIZE);
+    
+    // 启动 trace (会注入进程/线程信息)
+    // _NTO_TRACE_START 会触发内核注入当前所有进程/线程的状态信息
+    int ret = TraceEvent(_NTO_TRACE_START);
+    if (ret != 0) {
+        LOG_WARN("_NTO_TRACE_START 返回: {}", ret);
+    }
+    
+    // 短暂等待，让内核有时间注入事件
+    // 注意：等待时间过长会导致环形缓冲区被其他事件覆盖
+    // 内核注入进程信息通常在 1-2ms 内完成
+    usleep(2000);  // 2ms
+    
+    // 立即停止 trace，避免更多事件进入缓冲区
+    TraceEvent(_NTO_TRACE_STOP);
+    
+    // 不刷新，直接接收数据
+    // TraceEvent(_NTO_TRACE_FLUSHBUFFER);
+    
+    // 接收所有待处理的 buffer pulse
+    // 设置为 0 表示接收所有待处理的 pulse（直到超时）
+    // 这确保不会遗漏任何进程/线程信息
+    size_t pulse_count = drainPendingPulses(temp_buffer, 0);
+    
+    LOG_DEBUG("接收了 {} 个 buffer pulse", pulse_count);
+    
+    // 传递给 DataManager
+    data_manager_->setProcInfoBuffer(std::move(temp_buffer));
+}
+
+// ============================================================================
 // 统计信息
 // ============================================================================
 
@@ -521,7 +571,7 @@ void TracerEngine::printStats() const {
     LOG_INFO("╔══════════════════════════════════════════════════════╗");
     LOG_INFO("║                     采集统计                         ║");
     LOG_INFO("╠══════════════════════════════════════════════════════╣");
-    LOG_INFO("║ 处理 Buffer:   {}", static_cast<uint64_t>(buffers_processed_));
+    LOG_INFO("║ 中断触发次数:  {}", static_cast<uint64_t>(buffers_processed_));
     LOG_INFO("║ 缓冲区使用:    {}%", usage_percent);
     LOG_INFO("║ 环绕次数:      {}", data_buffer_.wrapCount());
     LOG_INFO("╚══════════════════════════════════════════════════════╝");

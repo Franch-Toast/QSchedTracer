@@ -16,10 +16,9 @@ KernelEventTrigger::KernelEventTrigger(const config::TriggerConfig& config)
     : event_class_(config.event_class)
     , event_id_(config.event_id)
     , condition_(config.condition)
-    , comment_(config.comment)
 {
-    LOG_DEBUG("创建内核事件触发器: class={}, event={}, comment={}",
-              event_class_, event_id_, comment_);
+    LOG_DEBUG("创建内核事件触发器: class={}, event={}",
+              event_class_, event_id_);
 }
 
 std::string KernelEventTrigger::name() const {

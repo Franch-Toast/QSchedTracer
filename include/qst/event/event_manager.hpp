@@ -66,11 +66,33 @@ public:
 
 private:
     /**
-     * @brief 设置调度事件 (核心功能)
-     * @param config 调度配置
+     * @brief 设置默认的采集事件（全部 Wide mode）
+     * 
+     * 采集策略（参见 TRACE_EVENT_SELECTION_GUIDE.md）：
+     * - 线程状态事件（全类 Wide）
+     * - VThread 状态事件（全类 Wide）
+     * - 进程事件（全类）
+     * - 通信事件（全类 Wide）
+     * - 控制事件（仅 CONTROLBUFFER）
+     * - KerCall 事件（同步原语 + IPC + 调度）
+     * 
      * @return 0 成功, -1 失败
      */
-    int setupSchedulingEvents(const config::SchedulingConfig& config);
+    int setupDefaultEvents();
+    
+    /**
+     * @brief 设置单个 KerCall 事件（ENTER + EXIT，Wide mode）
+     * @param kercall_id KerCall ID
+     * @param name 事件名称（用于日志）
+     */
+    void setupKerCallEvent(int kercall_id, const char* name);
+    
+    /**
+     * @brief 设置单个 KerCall 事件（仅 ENTER，Wide mode）
+     * @param kercall_id KerCall ID
+     * @param name 事件名称（用于日志）
+     */
+    void setupKerCallEnterOnly(int kercall_id, const char* name);
     
     /**
      * @brief 添加事件类

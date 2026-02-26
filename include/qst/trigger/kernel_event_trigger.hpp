@@ -58,7 +58,6 @@ public:
     int eventClass() const { return event_class_; }
     int eventId() const { return event_id_; }
     const config::TriggerCondition& condition() const { return condition_; }
-    const std::string& comment() const { return comment_; }
 
 private:
     /**
@@ -72,7 +71,6 @@ private:
     int event_class_;                   ///< 目标事件类 ID
     int event_id_;                      ///< 目标事件 ID
     config::TriggerCondition condition_; ///< 触发条件
-    std::string comment_;               ///< 注释
 };
 
 } // namespace trigger

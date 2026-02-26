@@ -52,9 +52,7 @@ EventClassConfig parseEventClass(const json& j) {
     if (j.contains("mode")) {
         config.mode = stringToEventMode(j["mode"].get<std::string>());
     }
-    if (j.contains("comment")) {
-        config.comment = j["comment"].get<std::string>();
-    }
+    // comment 字段已删除，不再读取
     return config;
 }
 
@@ -72,9 +70,7 @@ SpecificEventConfig parseSpecificEvent(const json& j) {
     if (j.contains("mode")) {
         config.mode = stringToEventMode(j["mode"].get<std::string>());
     }
-    if (j.contains("comment")) {
-        config.comment = j["comment"].get<std::string>();
-    }
+    // comment 字段已删除，不再读取
     return config;
 }
 
@@ -150,10 +146,7 @@ TriggerConfig parseTrigger(const json& j) {
         config.interval_sec = j["interval_sec"].get<int>();
     }
     
-    // 注释
-    if (j.contains("comment")) {
-        config.comment = j["comment"].get<std::string>();
-    }
+    // comment 字段已删除，不再读取
     
     return config;
 }
@@ -222,18 +215,11 @@ TracerConfig ConfigLoader::getDefault() {
     config.version = "1.0";
     config.buffer_size_mb = 10;
     
-    // 默认启用调度追踪
+    // 默认启用调度追踪（使用方案 C - 调度分析优化版）
     config.scheduling.enabled = true;
-    config.scheduling.mode = EventMode::Fast;
+    config.scheduling.mode = EventMode::Wide;  // 默认 Wide mode 以获取 priority 等信息
     
-    // 默认添加 __KER_SIGNAL_KILL (Wide mode)
-    // extra_events 使用外部 class ID (用于 TraceEvent API)
-    SpecificEventConfig signal_kill;
-    signal_kill.class_id = 3;   // _NTO_TRACE_KERCALLENTER (外部 class)
-    signal_kill.event_id = 26;  // __KER_SIGNAL_KILL
-    signal_kill.mode = EventMode::Wide;
-    signal_kill.comment = "KERCALLENTER: __KER_SIGNAL_KILL (外部 class=3)";
-    config.extra_events.specific_events.push_back(signal_kill);
+    // extra_events 默认为空，用户可通过配置文件添加额外事件
     
     // 默认添加 SIGKILL 触发器
     // triggers 使用内部 class ID (用于事件处理器中的匹配)
@@ -246,7 +232,6 @@ TracerConfig ConfigLoader::getDefault() {
     trigger.condition.data_index = 3;  // signo
     trigger.condition.op = CompareOp::Eq;
     trigger.condition.value = 9;       // SIGKILL
-    trigger.comment = "内部 class=2, event=26, data[3]=signo, 9=SIGKILL";
     config.triggers.push_back(trigger);
     
     return config;
@@ -314,9 +299,6 @@ std::string ConfigLoader::toJson(const TracerConfig& config, bool pretty) {
         json item;
         item["class"] = ec.class_id;
         item["mode"] = eventModeToString(ec.mode);
-        if (!ec.comment.empty()) {
-            item["comment"] = ec.comment;
-        }
         j["extra_events"]["classes"].push_back(item);
     }
     
@@ -326,9 +308,6 @@ std::string ConfigLoader::toJson(const TracerConfig& config, bool pretty) {
         item["class"] = se.class_id;
         item["event"] = se.event_id;
         item["mode"] = eventModeToString(se.mode);
-        if (!se.comment.empty()) {
-            item["comment"] = se.comment;
-        }
         j["extra_events"]["specific_events"].push_back(item);
     }
     
@@ -350,10 +329,6 @@ std::string ConfigLoader::toJson(const TracerConfig& config, bool pretty) {
             item["topic_name"] = t.topic_name;
         } else if (t.type == TriggerType::Timeout) {
             item["interval_sec"] = t.interval_sec;
-        }
-        
-        if (!t.comment.empty()) {
-            item["comment"] = t.comment;
         }
         
         j["triggers"].push_back(item);
