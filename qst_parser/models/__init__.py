@@ -1,16 +1,5 @@
-"""
-QST Parser - 公共数据模型
+"""Data models for QST v4 file structures."""
 
-仅包含文件头等公共结构，事件特定的模型应放在各自的 class 目录中。
-"""
+from .headers import QstFileHeader, SectionHeader, KBufEntry
 
-from .headers import FileHeader, ProcInfoHeader, MainDataHeader
-from .base import RawEvent, BaseEvent
-
-__all__ = [
-    "FileHeader",
-    "ProcInfoHeader", 
-    "MainDataHeader",
-    "RawEvent",
-    "BaseEvent",
-]
+__all__ = ["QstFileHeader", "SectionHeader", "KBufEntry"]

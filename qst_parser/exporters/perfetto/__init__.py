@@ -1,13 +1,6 @@
-"""
-Perfetto 导出器模块
+"""Perfetto protobuf export: BatchingWriter, TrackManager, write utilities."""
 
-将 QST 数据导出为 Perfetto protobuf 格式
-"""
+from .utils import BatchingWriter, write_slice, write_instant
+from .tracks import TrackManager
 
-from .exporter import PerfettoExporter, export_to_perfetto, ExportStats
-
-__all__ = [
-    "PerfettoExporter",
-    "export_to_perfetto",
-    "ExportStats",
-]
+__all__ = ["BatchingWriter", "TrackManager", "write_slice", "write_instant"]

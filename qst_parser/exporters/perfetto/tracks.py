@@ -1,27 +1,20 @@
 """
-Perfetto Track 管理器
+Perfetto Track Manager
 
-负责创建和管理所有 Tracks：
-- CPU Tracks
-- Process Tracks  
-- Thread Tracks
+Creates and manages all tracks (CPU, Process, Thread, sub-tracks).
+Supports both in-memory and streaming protobuf builders.
 """
 
-from typing import Dict, Tuple, Set, List, TYPE_CHECKING
-from collections import defaultdict
+from typing import Dict, List, Set, Tuple
 
 from perfetto.protos.perfetto.trace.perfetto_trace_pb2 import TrackDescriptor
 
 from .utils import generate_uuid
 
-if TYPE_CHECKING:
-    from perfetto.trace_builder.proto_builder import TraceProtoBuilder
-
 
 class TrackManager:
-    """Track 管理器"""
-    
-    def __init__(self, builder: "TraceProtoBuilder"):
+
+    def __init__(self, builder):
         self._builder = builder
         
         # CPU Tracks: cpu_id -> uuid
@@ -37,10 +30,6 @@ class TrackManager:
         
         # Thread Tracks: (pid, tid) -> uuid
         self._thread_tracks: Dict[Tuple[int, int], int] = {}
-        
-        # Thread 子 Tracks: (pid, tid, track_type) -> uuid
-        # 用于 Sync/IPC 事件，避免与 Thread State 重叠
-        self._thread_sub_tracks: Dict[Tuple[int, int, str], int] = {}
         
         # 名称映射
         self._process_names: Dict[int, str] = {}
@@ -129,14 +118,12 @@ class TrackManager:
         desc.uuid = self._cpu_group_uuid
         desc.name = "CPU scheduling"
         desc.child_ordering = TrackDescriptor.EXPLICIT
-        # 使用 sibling_order_rank 控制排序，最小值在最顶部
         desc.sibling_order_rank = -1000000
-        
-        # 每个 CPU 一个 Track
+
         for cpu_id in sorted(cpu_ids):
             uuid = generate_uuid()
             self._cpu_tracks[cpu_id] = uuid
-            
+
             packet = self._builder.add_packet()
             packet.timestamp = 0
             desc = packet.track_descriptor
@@ -144,7 +131,7 @@ class TrackManager:
             desc.name = f"CPU {cpu_id}"
             desc.parent_uuid = self._cpu_group_uuid
             desc.sibling_order_rank = cpu_id
-    
+
     def get_cpu_track(self, cpu_id: int) -> int:
         """获取 CPU Track UUID"""
         return self._cpu_tracks.get(cpu_id, 0)
@@ -178,9 +165,9 @@ class TrackManager:
         desc.uuid = uuid
         desc.name = "IRQ"
         desc.parent_uuid = parent_uuid
-        
+
         return uuid
-    
+
     # =========================================================================
     # Process/Thread Tracks
     # =========================================================================
@@ -189,13 +176,9 @@ class TrackManager:
         """
         创建进程和线程 Tracks
         
-        使用自定义 Track（而非原生 Thread Track）来支持子 Track 层次结构。
-        
         层次结构：
         Process (pid)
-        └── Thread [tid]        ← 自定义 Track，Thread State 事件
-            ├── SYNC            ← 子 Track，同步原语事件
-            └── IPC             ← 子 Track，IPC 事件
+        └── Thread [tid]        ← Thread State slices + instant events
         
         Args:
             threads: [(pid, tid), ...] 列表
@@ -217,40 +200,31 @@ class TrackManager:
             desc.name = f"{name} ({pid})"
             desc.process.pid = pid
             desc.process.process_name = name
-            # 使用 PID 排序，确保按 PID 顺序显示（从小到大）
             desc.process.legacy_sort_index = sort_index
             desc.child_ordering = TrackDescriptor.CHRONOLOGICAL
-        
-        # 创建线程 Tracks
-        # 注意：不使用 desc.thread（原生 Thread Track），因为原生 Thread Track
-        # 会被 Perfetto UI 特殊处理，导致子 Track（SYNC/IPC）无法正确嵌套。
-        # 使用自定义 Track + parent_uuid 实现层次结构。
-        # 按 pid、tid 排序以便在 UI 中有序显示
+
         sorted_threads = sorted(threads, key=lambda x: (x[0], x[1]))
-        
+
         for sort_index, (pid, tid) in enumerate(sorted_threads):
             if pid not in self._process_tracks:
                 continue
-            
+
             uuid = generate_uuid()
             self._thread_tracks[(pid, tid)] = uuid
-            
+
             name = self.get_thread_name(pid, tid)
             parent_uuid = self._process_tracks[pid]
-            
+
             packet = self._builder.add_packet()
             packet.timestamp = 0
             desc = packet.track_descriptor
             desc.uuid = uuid
-            desc.parent_uuid = parent_uuid  # 父 Track 为 Process Track
-            # 线程名格式：线程名 (tid)
+            desc.parent_uuid = parent_uuid
             desc.name = f"{name} ({tid})"
-            # 使用 sibling_order_rank 控制排序
             desc.sibling_order_rank = sort_index
-            desc.child_ordering = TrackDescriptor.CHRONOLOGICAL  # 允许子 Track
-            # 防止与系统 track 合并，确保层次结构正确
+            desc.child_ordering = TrackDescriptor.CHRONOLOGICAL
             desc.disallow_merging_with_system_tracks = True
-    
+
     def get_thread_track(self, pid: int, tid: int) -> int:
         """获取线程 Track UUID"""
         return self._thread_tracks.get((pid, tid), 0)
@@ -283,88 +257,24 @@ class TrackManager:
             desc.process.pid = pid
             desc.process.process_name = name
             desc.child_ordering = TrackDescriptor.CHRONOLOGICAL
-        
-        # 创建线程 Track（不使用 desc.thread，以支持子 Track）
+
         uuid = generate_uuid()
         self._thread_tracks[(pid, tid)] = uuid
-        
+
         name = self.get_thread_name(pid, tid)
         parent_uuid = self._process_tracks[pid]
-        
+
         packet = self._builder.add_packet()
         packet.timestamp = 0
         desc = packet.track_descriptor
         desc.uuid = uuid
         desc.parent_uuid = parent_uuid
-        # 线程名格式：线程名 (tid)
         desc.name = f"{name} ({tid})"
         desc.child_ordering = TrackDescriptor.CHRONOLOGICAL
         desc.disallow_merging_with_system_tracks = True
-        
+
         return uuid
-    
-    def get_or_create_thread_sub_track(self, pid: int, tid: int, 
-                                        track_type: str) -> int:
-        """
-        获取或创建线程的子 Track
-        
-        子 Track 用于 Sync/IPC 事件，因为这些事件可能跨越多个 Thread State，
-        导致时间范围重叠。将它们放在子 Track 上可以避免 Perfetto 的
-        slice_drop_overlapping_complete_event 错误。
-        
-        层次结构：
-        Process (pid)
-        └── Thread [tid]        ← Thread State 事件
-            ├── SYNC            ← 同步原语事件 (MutexLock, SemWait, CondvarWait)
-            └── IPC             ← IPC 事件 (MsgSend, MsgReply, MsgRecv)
-        
-        Args:
-            pid: 进程 ID
-            tid: 线程 ID
-            track_type: Track 类型 ("sync" 或 "ipc")
-        
-        Returns:
-            子 Track 的 UUID
-        """
-        key = (pid, tid, track_type)
-        
-        if key in self._thread_sub_tracks:
-            return self._thread_sub_tracks[key]
-        
-        # 确保父 Thread Track 存在（如不存在则创建）
-        parent_uuid = self._ensure_thread_track(pid, tid)
-        if not parent_uuid:
-            return 0
-        
-        # 创建子 Track（作为 Thread Track 的子级）
-        uuid = generate_uuid()
-        self._thread_sub_tracks[key] = uuid
-        
-        # 子 Track 名称映射
-        name_map = {
-            "sync": "SYNC",    # 同步原语
-            "ipc": "IPC",      # 消息传递
-        }
-        
-        packet = self._builder.add_packet()
-        packet.timestamp = 0
-        desc = packet.track_descriptor
-        desc.uuid = uuid
-        desc.name = name_map.get(track_type, track_type.upper())
-        desc.parent_uuid = parent_uuid  # 父 Track 为 Thread Track
-        # 防止与系统 track 合并
-        desc.disallow_merging_with_system_tracks = True
-        
-        return uuid
-    
-    def get_thread_sync_track(self, pid: int, tid: int) -> int:
-        """获取线程的 Sync 子 Track"""
-        return self.get_or_create_thread_sub_track(pid, tid, "sync")
-    
-    def get_thread_ipc_track(self, pid: int, tid: int) -> int:
-        """获取线程的 IPC 子 Track"""
-        return self.get_or_create_thread_sub_track(pid, tid, "ipc")
-    
+
     # =========================================================================
     # 统计
     # =========================================================================

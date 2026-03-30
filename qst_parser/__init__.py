@@ -1,12 +1,9 @@
 """
-QST Parser - QNX Trace Event 解析器
-
-模块化的 QST 文件解析器，支持多种事件类型的解析和导出。
+QST Parser — Streaming QNX Trace Event Parser (QST v4 format)
 """
 
-__version__ = "1.0.0"
-__author__ = "QSchedTracer Team"
+__version__ = "4.0.0"
 
-from .parser import QstParser
+from .core.streaming_parser import StreamingParser
 
-__all__ = ["QstParser"]
+__all__ = ["StreamingParser"]

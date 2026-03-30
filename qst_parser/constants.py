@@ -7,21 +7,28 @@ QST Parser - 公共常量定义
 from enum import IntEnum
 
 # ============================================================================
-# 文件格式常量
+# 文件格式常量 — QST v4
 # ============================================================================
 
-QST_MAGIC = 0x51535433      # 'QST3'
-QST_VERSION = 3
+QST_MAGIC = 0x51535434      # 'QST4'
+QST_VERSION = 4
 QST_EVENT_SIZE = 16
 
-# 文件头大小
-FILE_HEADER_SIZE = 64
-PROCINFO_HEADER_SIZE = 16
-MAINDATA_HEADER_SIZE = 16
+# v4 头部大小
+FILE_HEADER_SIZE = 64        # QstFileHeader (精简版)
+SECTION_HEADER_SIZE = 24     # SectionHeader (通用 section 头)
+KBUF_ENTRY_SIZE = 24         # KBufEntry (每个有效 buffer 一条)
 
 # Section 魔数
-PROCINFO_MAGIC = 0x50494E46  # 'PINF'
-MAINDATA_MAGIC = 0x4D41494E  # 'MAIN'
+KBUF_MAGIC = 0x4B425546      # 'KBUF'  (旧 v4 格式)
+MAIN_MAGIC = 0x4D41494E      # 'MAIN'  (旧 v4 格式)
+DATA_MAGIC = 0x44415441      # 'DATA'  (新 v4: raw tracebuf_t blocks)
+PINF_MAGIC = 0x50494E46      # 'PINF'
+
+# tracebuf_t header 字段偏移 (QNX 7.1 和 8.0 上相同)
+TRACEBUF_OFFSET_FLAGS      = 16
+TRACEBUF_OFFSET_NUM_EVENTS = 20
+TRACEBUF_OFFSET_SEQ        = 24
 
 # 32 位最大值（用于处理时间回环）
 MAX_UINT32 = 0xFFFFFFFF
@@ -31,10 +38,8 @@ MAX_UINT32 = 0xFFFFFFFF
 # 参考: sys/trace.h
 # ============================================================================
 
-# 内核调用数量限制（用于区分 ENTER/EXIT/INT）
 _TRACE_MAX_KER_CALL_NUM = 128
 
-# 64 位内核调用标志
 KERCALL_64 = 0x200  # _NTO_TRACE_KERCALL64 (bit 9)
 
 
@@ -95,10 +100,6 @@ class ExternalClass(IntEnum):
     QUIP = 17           # _NTO_TRACE_QUIP
     SEC = 18            # _NTO_TRACE_SEC
     QVM = 19            # _NTO_TRACE_QVM
-    # 注意: INTENTER_64 和 INT_HANDLER_ENTER_64 不是独立的外部类，
-    # 而是通过内部事件号 (int_event) 来区分的:
-    # - _TRACE_INT_ENTRY (1) vs _TRACE_INT_ENTRY_64 (5)
-    # - _TRACE_INT_HANDLER_ENTRY (3) vs _TRACE_INT_HANDLER_ENTRY_64 (6)
 
 
 # ============================================================================
@@ -120,16 +121,6 @@ class StructType(IntEnum):
 
 
 # ============================================================================
-# 事件模式
-# ============================================================================
-
-class EventMode(IntEnum):
-    """事件记录模式"""
-    FAST = 0    # Fast mode - 精简参数
-    WIDE = 1    # Wide mode - 完整参数（组合事件）
-
-
-# ============================================================================
 # 中断事件子类型
 # 参考: sys/trace.h - _TRACE_INT_*
 # ============================================================================
@@ -144,21 +135,3 @@ class IntEventType(IntEnum):
     HANDLER_ENTRY_64 = 6  # _TRACE_INT_HANDLER_ENTRY_64
 
 
-# ============================================================================
-# Perfetto 颜色 (用于导出)
-# ============================================================================
-
-STATE_COLORS = {
-    "RUNNING": "good",
-    "READY": "olive",
-    "RECEIVE": "rail_load",
-    "SEND": "rail_response",
-    "REPLY": "rail_animation",
-    "MUTEX": "bad",
-    "CONDVAR": "terrible",
-    "SEM": "bad",
-    "NANOSLEEP": "thread_state_sleeping",
-    "DEAD": "black",
-    "STOPPED": "grey",
-    "INTR": "yellow",
-}
