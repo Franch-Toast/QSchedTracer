@@ -1,22 +1,24 @@
 # QSchedTracer
 
-**QNX 调度追踪器** - 轻量级飞行记录仪模式事件采集工具 (v2.0)
+**QNX 调度追踪器** — 轻量级飞行记录仪，Ring Mode + mmap 零拷贝，输出 QST v4 格式 (v3.0)
 
 ## 概述
 
-QSchedTracer 是专为 QNX 7.1 Neutrino RTOS 设计的系统追踪工具。采用"飞行记录仪"模式持续记录调度事件，支持：
+QSchedTracer 是专为 QNX Neutrino RTOS 设计的内核调度追踪工具。采用 Ring Mode + mmap 零拷贝架构，持续记录调度事件，Ctrl+C 停止后直接写入 QST v4 二进制文件。
 
-- **配置驱动**：JSON 配置文件控制事件过滤和触发条件
-- **可扩展触发**：支持内核事件触发落盘 (如 SIGKILL)
-- **真实时间戳**：支持 UNIX 时间戳转换，精确到微秒
-- **Perfetto 集成**：导出标准 Chrome Trace Event 格式
+支持平台：
 
-**v2.0 新特性**：
+| 平台 | 宏定义 | Ring Mode 实现 |
+|------|--------|---------------|
+| QNX 7.1 (SA8650) | `LP8650` | `ALLOCBUFFER` → mmap 物理地址 |
+| QNX 8.0 (SA8797) | `LP8797` | `LOGGER_ATTACH` + per-CPU buffer |
 
-- 模块化架构重构 (配置/触发器/事件/数据管理器)
-- JSON 配置文件支持
-- `RingBuffer` → `DataBuffer` 重命名
-- 固定输出文件名 `trace_{timestamp}.qst`
+核心特性：
+
+- **Ring Mode + mmap 零拷贝**：内核 ring buffer 直接映射到用户空间，STOP 后零拷贝写入文件
+- **QST v4 文件格式**：`QstFileHeader` (64B) → `DATA` section (raw tracebuf_t) → `PINF` section (进程信息)
+- **事件过滤**：默认仅调度相关事件 (Thread/Comm/KerCall)，`-a` 全量采集
+- **无配置文件**：CLI 参数直接控制，无需 JSON 配置
 
 ## 快速开始
 
@@ -26,149 +28,101 @@ QSchedTracer 是专为 QNX 7.1 Neutrino RTOS 设计的系统追踪工具。采�
 
 # 2. 部署到 QNX 设备
 scp build/qnx_aarch64/qst_tracer root@<QNX_IP>:/tmp/
-scp config/default.json root@<QNX_IP>:/tmp/qst_config.json
 
-# 3. 运行采集 (使用默认配置)
-ssh root@<QNX_IP> '/tmp/qst_tracer'     # Ctrl+C 停止
+# 3. 运行采集 (Ctrl+C 停止并落盘)
+ssh root@<QNX_IP> '/tmp/qst_tracer'
 
-# 4. 使用指定配置
-ssh root@<QNX_IP> '/tmp/qst_tracer -c /tmp/qst_config.json'
+# 4. 指定缓冲区大小和输出目录
+ssh root@<QNX_IP> '/tmp/qst_tracer -b 20 -o /data/traces'
 
-# 5. 取回数据并解析
-scp root@<QNX_IP>:/tmp/trace_*.qst .
-python3 tools/qst_parse.py trace_*.qst -o trace.json
+# 5. 全量采集模式
+ssh root@<QNX_IP> '/tmp/qst_tracer -a'
 
-# 6. 可视化: 打开 https://ui.perfetto.dev/ 并拖入 trace.json
+# 6. 取回数据并解析
+scp root@<QNX_IP>:/tmp/tracer.log.*.qst .
+python3 -m qst_parser tracer.log.*.qst -o trace.json
 ```
 
 ## 架构
 
-### 系统架构
-
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                              应用层                                   │
-│  ┌────────────┐  ┌────────────────┐  ┌────────────┐                 │
-│  │    CLI     │  │  ConfigLoader  │  │   Logger   │                 │
-│  │ (main.cpp) │  │  (JSON 解析)   │  │  (spdlog)  │                 │
-│  └─────┬──────┘  └───────┬────────┘  └────────────┘                 │
-│        │                 │                                           │
-│        └────────┬────────┘                                           │
-│                 ▼                                                     │
-└──────────────────────────────────────────────────────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                             核心层                                    │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │                        TracerEngine                             │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐ │ │
-│  │  │ EventManager │  │TriggerManager│  │    DataManager       │ │ │
-│  │  │ (事件配置)    │  │ (触发器管理)  │  │ (落盘 + 进程信息)    │ │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────────────┘ │ │
-│  │                           │                                    │ │
-│  │                           ▼                                    │ │
-│  │  ┌─────────────────────────────────────────────────────────┐  │ │
-│  │  │                    DataBuffer                            │  │ │
-│  │  │  (环形缓冲区，持续记录，触发时快照保存)                   │  │ │
-│  │  └─────────────────────────────────────────────────────────┘  │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### 数据流
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          QNX 内核                                   │
-│                                                                     │
-│  调度器事件 ──▶ traceevent_t (16 bytes)                             │
-│     │           - header: CPU, 事件类型                             │
-│     │           - data[0]: 时间戳 (32-bit cycles)                   │
-│     │           - data[1-2]: pid, tid, state                        │
-│     ▼                                                               │
-│  内核 Trace Buffer (tracebuf_t × 16, Linear 模式)                   │
-│     │                                                               │
-│     │ Buffer 满时触发 InterruptHookTrace                            │
-└─────┼───────────────────────────────────────────────────────────────┘
-      │
-      │ 中断回调 (memcpy ~16KB, ~2-4µs)
-      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     QSchedTracer 进程                               │
-│                                                                     │
-│  DataBuffer (10MB, 环形覆盖)                                        │
-│     │  - 自动覆盖旧数据，保留最近 N 秒                              │
-│     │                                                               │
-│     │ 触发落盘 (Ctrl+C / 触发器条件)                                │
-│     ▼                                                               │
-│  1. _NTO_TRACE_STOP + FLUSHBUFFER                                   │
-│  2. 记录真实时间同步点 (wallclock + cycles)                         │
-│  3. 使用独立缓冲区采集进程/线程名称                                 │
-│  4. 写入 trace_{timestamp}.qst                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        QNX 内核                              │
+│                                                             │
+│  调度器/IPC/KerCall 事件 → traceevent_t (16B)               │
+│     │                                                       │
+│     ▼                                                       │
+│  Kernel Ring Buffer (tracebuf_t × N, Ring Mode)             │
+│     │                                                       │
+│     │ mmap 零拷贝 (QNX 7.1: 物理地址 / QNX 8.0: per-CPU)   │
+└─────┼───────────────────────────────────────────────────────┘
       │
       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       离线处理                                      │
-│                                                                     │
-│  trace_*.qst ──▶ qst_parse.py ──▶ trace.json ──▶ Perfetto UI        │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                   QSchedTracer 进程                          │
+│                                                             │
+│  TracerEngine                                               │
+│  ├── initKernelTraceBase()     IO 权限 + 清理残留            │
+│  ├── setupSelfManagedMode()    ALLOCBUFFER + mmap + SETRING │
+│  ├── configureEventClasses()   事件过滤配置                  │
+│  ├── runLoop()                 START → poll → Ctrl+C        │
+│  └── dumpSelfManaged()         STOP → FLUSH → scan → write  │
+│       ├── [1] scanValidRange() 扫描有效 tracebuf_t 区间     │
+│       ├── [2] DataManager.openQstFile()    写 QstFileHeader │
+│       ├── [3] writeContiguousTracebufs()   写 DATA section  │
+│       ├── [4] START → usleep → STOP (采集进程信息)          │
+│       ├── [5] writeContiguousTracebufs()   写 PINF section  │
+│       └── [6] closeQstFile()                                │
+│                                                             │
+│  DataBuffer (元数据容器: clock_freq, wallclock)              │
+│  DataManager (QST v4 文件 I/O)                              │
+└─────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  输出: prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-*.qst       │
+│                                                             │
+│  QST v4 文件布局:                                           │
+│    QstFileHeader (64B)                                      │
+│    ├── magic: 'QST4' (0x51535434)                           │
+│    ├── version: 4                                           │
+│    ├── clock_freq, capture_start/end_ns, num_cpus, ...      │
+│    SectionHeader (24B, DATA)                                │
+│    ├── raw tracebuf_t[] (调度事件数据)                       │
+│    SectionHeader (24B, PINF)                                │
+│    └── raw tracebuf_t[] (进程/线程名称信息)                  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 配置文件
+## 命令行接口
 
-### 默认配置 (config/default.json)
+```
+QSchedTracer - QNX Ring Mode Scheduler Tracer (QST v4)
 
-```json
-{
-  "version": "1.0",
-  "buffer": {
-    "size_mb": 10
-  },
-  "scheduling": {
-    "enabled": true,
-    "mode": "fast"
-  },
-  "extra_events": {
-    "classes": [],
-    "specific_events": [
-      {
-        "class": 3,
-        "event": 26,
-        "mode": "wide",
-        "comment": "KERCALLENTER: __KER_SIGNAL_KILL"
-      }
-    ]
-  },
-  "triggers": [
-    {
-      "type": "kernel_event",
-      "class": 3,
-      "event": 26,
-      "condition": {
-        "data_index": 3,
-        "op": "eq",
-        "value": 9
-      },
-      "comment": "data[3]=signo, 9=SIGKILL"
-    }
-  ]
-}
+Usage: qst_tracer [options]
+
+Options:
+  -b <MB>    Buffer size in MB (default: 10)
+  -o <dir>   Output directory (default: .)
+  -p <name>  Output file prefix (default: tracer)
+  -a         Capture all events (default: scheduling only)
+  -v         Verbose output
+  -h         Show this help
+
+Output file:
+  prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-YYYYMMDD.HHMMSS.uuuuuu.qst
 ```
 
-### 配置项说明
+示例：
 
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| `buffer.size_mb` | int | 缓冲区大小 (MB) |
-| `scheduling.enabled` | bool | 是否启用调度追踪 |
-| `scheduling.mode` | string | "fast" 或 "wide" |
-| `extra_events.classes` | array | 额外的事件类 |
-| `extra_events.specific_events` | array | 特定事件 |
-| `triggers` | array | 触发器配置 |
-
-详见 `docs/architecture_redesign.md`
+```bash
+qst_tracer                     # 默认：10MB 缓冲，调度事件，输出到当前目录
+qst_tracer -b 20               # 20MB 缓冲区
+qst_tracer -o /data/traces     # 指定输出目录
+qst_tracer -p myapp            # 输出文件前缀为 myapp
+qst_tracer -a                  # 全量采集所有事件类别
+qst_tracer -a -b 50 -v         # 全量采集 + 50MB 缓冲 + 详细日志
+```
 
 ## 编译
 
@@ -178,11 +132,9 @@ python3 tools/qst_parse.py trace_*.qst -o trace.json
 |------|------|------|
 | QNX SDP | 7.1+ | 交叉编译工具链 |
 | C++ | C++17 | 语言标准 |
-| spdlog | 1.15+ | 日志库 |
-| nlohmann/json | 3.11+ | JSON 解析库 |
-| Python | 3.6+ | 解析器运行环境 |
+| spdlog | 1.15+ | 日志库 (included in `spdlog/`) |
 
-### 方法一：使用 build.bash (推荐)
+### 方法一：build.bash (推荐, QNX 7.1)
 
 ```bash
 # 编译 Release 版本
@@ -195,138 +147,150 @@ python3 tools/qst_parse.py trace_*.qst -o trace.json
 ./build.bash clean
 ```
 
-**输出**：`build/qnx_aarch64/qst_tracer`
+输出：`build/qnx_aarch64/qst_tracer` (ELF 64-bit ARM aarch64)
 
-### 方法二：使用 CMake
+### 方法二：CMake (QNX 7.1 交叉编译)
 
 ```bash
-mkdir cmake_build && cd cmake_build
-cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/qnx710-aarch64.cmake ..
-make
+# 需要先设置 QNX 环境变量
+export QNX_HOST=/path/to/toolchains_qnx/host/linux/x86_64
+export QNX_TARGET=/path/to/toolchains_qnx/target/qnx7
+
+# 配置 + 编译
+cmake -B cmake_build \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/qnx710-aarch64.cmake \
+    -DCMAKE_BUILD_TYPE=Release
+cmake --build cmake_build
+
+# 编译 QNX 8.0 版本
+cmake -B cmake_build_80 \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/qnx710-aarch64.cmake \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DQNX80=ON
+cmake --build cmake_build_80
 ```
 
-### 方法三：使用 Bazel
+输出：`cmake_build/qst_tracer`
+
+### 方法三：Bazel (Deeproute CI)
 
 ```bash
 # 构建可执行文件 (QNX SA8650 平台)
 bazel build --config=sa8650_qnx //:qst_tracer_bin
 
-# 构建完整发布包
+# 构建发布包
 bazel build --config=sa8650_qnx //:qst_tracer_release_package
-```
 
-## 命令行接口
-
-```
-qst_tracer [选项]
-
-选项:
-  -c <文件>  配置文件路径 (默认: ./qst_config.json)
-  -b <MB>    缓冲区大小，覆盖配置 (默认: 配置文件值或 10)
-  -v         详细输出
-  -h         显示帮助
-
-输出文件:
-  trace_YYYYMMDD_HHMMSS.qst  (固定格式)
-
-示例:
-  qst_tracer                          # 使用默认配置
-  qst_tracer -c /etc/qst/config.json  # 使用指定配置
-  qst_tracer -b 16                    # 覆盖缓冲区大小
+# 构建 QNX 8.0 版本 (SA8797)
+bazel build --config=sa8797_qnx //:qst_tracer_bin
 ```
 
 ## 项目结构
 
 ```
 QSchedTracer/
-├── build.bash                      # 编译脚本
+├── build.bash                      # 编译脚本 (QNX 7.1)
 ├── CMakeLists.txt                  # CMake 配置
 ├── BUILD                           # Bazel 配置
-├── README.md                       # 本文档
-│
-├── config/
-│   └── default.json                # 默认配置
+├── README.md
 │
 ├── include/qst/
-│   ├── types.hpp                   # 公共类型定义
-│   ├── log.hpp                     # 日志工具
-│   │
+│   ├── types.hpp                   # QST v4 文件格式结构体
+│   ├── log.hpp                     # 日志工具 (spdlog)
 │   ├── config/
-│   │   ├── types.hpp               # 配置数据结构
-│   │   └── config_loader.hpp       # 配置加载器
-│   │
+│   │   └── types.hpp               # TracerConfig, EventFilter
 │   ├── core/
-│   │   ├── data_buffer.hpp         # 数据缓冲区
-│   │   └── tracer_engine.hpp       # 追踪引擎
-│   │
-│   ├── trigger/
-│   │   ├── trigger.hpp             # 触发器接口
-│   │   ├── trigger_manager.hpp     # 触发器管理器
-│   │   └── kernel_event_trigger.hpp # 内核事件触发器
-│   │
-│   ├── event/
-│   │   └── event_manager.hpp       # 事件管理器
-│   │
+│   │   ├── data_buffer.hpp         # 元数据容器 (clock_freq, wallclock)
+│   │   └── tracer_engine.hpp       # 追踪引擎 (Ring Mode + mmap)
 │   └── data/
-│       └── data_manager.hpp        # 数据管理器
+│       └── data_manager.hpp        # QST v4 文件写入器
 │
 ├── src/
-│   ├── main.cpp                    # 主入口
-│   │
-│   ├── config/
-│   │   └── config_loader.cpp
-│   │
+│   ├── main.cpp                    # CLI 入口
 │   ├── core/
 │   │   ├── data_buffer.cpp
-│   │   └── tracer_engine.cpp
-│   │
-│   ├── trigger/
-│   │   ├── kernel_event_trigger.cpp
-│   │   └── trigger_manager.cpp
-│   │
-│   ├── event/
-│   │   └── event_manager.cpp
-│   │
+│   │   └── tracer_engine.cpp       # 核心实现
 │   └── data/
 │       └── data_manager.cpp
 │
-├── spdlog/                         # spdlog (header-only)
-├── third_party/
-│   └── nlohmann/
-│       └── json.hpp                # nlohmann/json
+├── cmake/
+│   └── qnx710-aarch64.cmake       # QNX 7.1 交叉编译工具链
 │
-├── tools/
-│   └── qst_parse.py                # Python 解析器
+├── spdlog/                         # spdlog (header-only, vendored)
 │
-└── docs/
-    ├── architecture_redesign.md    # 架构设计文档
-    └── trace_event_format.md       # Perfetto 格式参考
+├── kev_parser/                     # .kev 文件解析器 (独立子项目)
+│   ├── CMakeLists.txt
+│   ├── kev_parser_design.md
+│   ├── ring_buffer_design.md
+│   ├── include/kev/                # 解析器头文件
+│   └── src/                        # 解析器源码
+│
+└── qst_parser/                     # .qst 文件解析器 (Python)
+    ├── __main__.py
+    ├── core/                       # 解析核心
+    ├── exporters/                  # JSONL / Perfetto 导出
+    └── models/                     # 数据模型
 ```
 
 ## 技术细节
 
-### 时间戳处理
+### QST v4 文件格式
 
-QNX trace 事件使用 32 位 cycles 时间戳，约 3-4 秒回绕一次。采用"结束同步点"方案：
+```
+偏移    大小    字段
+0x00    4B      magic:    0x51535434 ('QST4')
+0x04    4B      version:  4
+0x08    4B      header_size: 64
+0x0C    4B      flags:    0 (little-endian)
+0x10    8B      clock_freq (cycles_per_sec)
+0x18    8B      capture_start_ns (epoch nanoseconds)
+0x20    8B      capture_end_ns
+0x28    4B      num_cpus
+0x2C    4B      os_version (710 / 800)
+0x30    4B      tracebuf_size
+0x34    4B      data_offset
+0x38    8B      reserved (bufs_per_cpu for QNX 8.0)
+--- (64 bytes total) ---
 
-1. 采集结束时记录 `wallclock` (CLOCK_REALTIME) + `sync_cycles` (最后事件的 cycles)
-2. 解析器从最后一个事件向前推算，自动处理回绕
-3. 真实时间 = wallclock - (sync_cycles - event_cycles) / clock_freq
+SectionHeader (DATA / PINF):
+0x00    4B      magic:    'DATA' (0x44415441) or 'PINF' (0x50494E46)
+0x04    4B      version:  1
+0x08    8B      payload_size (bytes)
+0x10    4B      entry_count (number of tracebuf_t blocks)
+0x14    4B      reserved
+--- (24 bytes total) ---
+```
 
-### 进程/线程名称采集
+### 事件过滤 (Scheduling 模式)
 
-1. 主采集使用 `_NTO_TRACE_STARTNOSTATE` (不注入初始状态)
-2. 落盘前使用**独立缓冲区**调用 `_NTO_TRACE_START` 采集名称
-3. 通过 `g_active_buffer` 指针动态切换，避免污染主调度数据
+默认 `-a` 未指定时，仅采集调度相关事件：
 
-### 性能特性
+| 类别 | 模式 | 说明 |
+|------|------|------|
+| Thread | Wide | 全部线程状态事件 |
+| VThread | Wide | 虚拟线程 (QNX 7.1 only) |
+| Process | Default | 进程创建/销毁 |
+| Comm | Wide | IPC 通信事件 |
+| Control | Event | CONTROLBUFFER only |
+| KerCall | Wide, 选择性 | MUTEX/SEM/CONDVAR/MSG/SCHED_YIELD |
 
-| 指标 | 数值 |
-|------|------|
-| 中断处理时间 | ~2-4 µs (memcpy 16KB) |
-| 中断频率 | ~100-500 Hz |
-| CPU 开销 | < 0.2% |
-| 事件容量 | ~625K 事件/10MB |
+`-a` 模式下采集所有事件类别 (`ADDALLCLASSES + SETCLASSWIDE`)。
+
+### 平台差异
+
+| 特性 | QNX 7.1 (LP8650) | QNX 8.0 (LP8797) |
+|------|-------------------|-------------------|
+| Buffer 分配 | `ALLOCBUFFER` → paddr_t | `LOGGER_ATTACH` → per-CPU |
+| 内存映射 | `mmap(MAP_PHYS, paddr)` | `ALLOCBUFFER` 直接返回虚拟地址 |
+| VThread | 支持 | 不支持 |
+| Buffer 计算 | total = size_mb * 1024 / 16 | per_cpu = total / num_cpus |
+
+## 相关工具
+
+| 工具 | 路径 | 说明 |
+|------|------|------|
+| **kev_parser** | `kev_parser/` | .kev 文件解析器 (C++), 将 tracelogger kev 文件转为 JSONL/text |
+| **qst_parser** | `qst_parser/` | .qst 文件解析器 (Python), 将 QST 文件转为 JSON/Perfetto 格式 |
 
 ## License
 

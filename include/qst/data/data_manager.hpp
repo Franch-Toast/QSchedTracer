@@ -1,119 +1,69 @@
 /**
  * @file data/data_manager.hpp
- * @brief QSchedTracer - 数据管理器
- * 
- * @details
- * 负责数据落盘和进程信息采集。
- * 文件名固定格式: trace_{timestamp}.qst
- * 
- * @author QSchedTracer Team
- * @date 2026-01-26
+ * @brief QSchedTracer - QST v4 文件写入器
+ *
+ * QST v4 写入流程（由 TracerEngine 驱动）:
+ *   1. openQstFile()                 → 创建文件，写入 QstFileHeader (64B)
+ *   2. writeSectionHeader(DATA, N)   → 写入 DATA SectionHeader (24B)
+ *   3. writeContiguousTracebufs(...) → 写入 raw tracebuf_t 块 (1~2 次 write)
+ *   4. writeSectionHeader(PINF, M)   → 写入 PINF SectionHeader (24B)
+ *   5. writeContiguousTracebufs(...) → 写入 procinfo tracebuf_t 块
+ *   6. closeQstFile()               → 关闭文件
  */
 
 #pragma once
 
-#include "qst/core/data_buffer.hpp"
 #include "qst/types.hpp"
+#include "qst/core/data_buffer.hpp"
 #include <string>
-#include <memory>
-#include <cstdint>
+#include <chrono>
+
+#ifdef __QNX__
+#include <sys/trace.h>
+#endif
 
 namespace qst {
 namespace data {
 
-/**
- * @brief 数据管理器
- * 
- * 负责：
- * 1. 采集进程/线程信息 (落盘前)
- * 2. 保存数据到 .qst 文件
- * 3. 生成固定格式的文件名
- */
 class DataManager {
 public:
-    /**
-     * @brief 构造函数
-     * @param data_buffer 数据缓冲区引用
-     */
-    explicit DataManager(DataBuffer& data_buffer);
-    
-    /**
-     * @brief 析构函数
-     */
+    DataManager(DataBuffer& buffer,
+                const std::string& output_dir,
+                const std::string& file_prefix = "tracer");
     ~DataManager();
-    
-    // 禁止拷贝
-    DataManager(const DataManager&) = delete;
-    DataManager& operator=(const DataManager&) = delete;
-    
-    /**
-     * @brief 设置进程/线程信息缓冲区
-     * 
-     * 由 TracerEngine 采集后传入。
-     * 
-     * @param buffer 包含进程/线程信息的缓冲区
-     */
-    void setProcInfoBuffer(DataBuffer&& buffer);
-    
-    /**
-     * @brief 保存数据到文件
-     * 
-     * 文件名自动生成: trace_{timestamp}.qst
-     * 
-     * @return 0 成功, -1 失败
-     */
-    int save();
-    
-    /**
-     * @brief 保存数据到指定文件
-     * @param filename 文件名
-     * @return 0 成功, -1 失败
-     */
-    int saveTo(const std::string& filename);
-    
-    /**
-     * @brief 获取最后保存的文件名
-     * @return 文件名
-     */
+
+#ifdef __QNX__
+    int openQstFile(uint64_t clock_freq,
+                    const std::chrono::system_clock::time_point& start_time,
+                    const std::chrono::system_clock::time_point& end_time,
+                    int event_type,
+                    uint32_t bufs_per_cpu = 0);
+
+    int writeSectionHeader(uint32_t magic, uint32_t entry_count);
+
+    int writeContiguousTracebufs(const tracebuf_t* base, int N,
+                                  int start, int count);
+
+    int closeQstFile();
+#endif
+
     const std::string& lastFilename() const { return last_filename_; }
-    
-    /**
-     * @brief 获取进程信息数据大小
-     * @return 字节数
-     */
-    size_t procInfoSize() const { return procinfo_size_; }
-    
-    /**
-     * @brief 获取进程信息事件数量
-     * @return 事件数
-     */
-    size_t procInfoCount() const { return procinfo_count_; }
+    const std::string& outputDir() const { return output_dir_; }
 
 private:
-    /**
-     * @brief 生成时间戳文件名
-     * @return 文件名 (trace_YYYYMMDD_HHMMSS.qst)
-     */
-    static std::string generateFilename();
-    
-    /**
-     * @brief 写入文件
-     * @param filename 文件名
-     * @return 0 成功, -1 失败
-     */
-    int writeToFile(const std::string& filename);
+    std::string generateFinalPath(
+        const std::chrono::system_clock::time_point& start_time,
+        const std::chrono::system_clock::time_point& end_time,
+        int event_type);
 
-private:
-    DataBuffer& data_buffer_;                       ///< 主数据缓冲区引用
-    
-    // 进程/线程信息缓冲区
-    std::unique_ptr<uint8_t[]> procinfo_buffer_;    ///< 进程信息缓冲区
-    size_t procinfo_size_{0};                       ///< 进程信息数据大小
-    size_t procinfo_count_{0};                      ///< 进程信息事件数量
-    
-    std::string last_filename_;                     ///< 最后保存的文件名
+    static ssize_t writeAll(int fd, const void* buf, size_t count);
+
+    DataBuffer& buffer_;
+    std::string output_dir_;
+    std::string file_prefix_;
+    std::string last_filename_;
+    int open_fd_{-1};
 };
 
-} // namespace data
-} // namespace qst
-
+}  // namespace data
+}  // namespace qst

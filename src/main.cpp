@@ -1,35 +1,19 @@
 /**
  * @file main.cpp
  * @brief QSchedTracer - 主程序入口
- * 
- * @details
- * QNX 调度追踪器命令行入口。
- * 
- * ## 用法
- * 
- * ```bash
- * qst_tracer [选项]
- * 
- * 选项:
- *   -c <文件>  配置文件路径 (默认: ./qst_config.json)
- *   -b <MB>    缓冲区大小，覆盖配置 (默认: 配置文件值或 10)
+ *
+ * 用法:
+ *   qst_tracer [选项]
+ *
+ *   -b <MB>    缓冲区大小 (默认: 10)
+ *   -o <dir>   输出目录 (默认: .)
+ *   -a         全量采集 (默认: scheduling filtered)
  *   -v         详细输出
  *   -h         显示帮助
- * 
- * 示例:
- *   qst_tracer                          # 使用默认配置
- *   qst_tracer -c /etc/qst/config.json  # 使用指定配置
- *   qst_tracer -b 16                    # 覆盖缓冲区大小
- * ```
- * 
- * @note 本程序仅支持 QNX Neutrino RTOS 平台
- * 
- * @author QSchedTracer Team
- * @date 2026-01-26
  */
 
 #include "qst/core/tracer_engine.hpp"
-#include "qst/config/config_loader.hpp"
+#include "qst/config/types.hpp"
 #include "qst/log.hpp"
 
 #include <cstdio>
@@ -38,70 +22,55 @@
 #include <csignal>
 #include <unistd.h>
 
-// 全局追踪器指针 (用于信号处理)
 static qst::core::TracerEngine* g_engine = nullptr;
 
-/**
- * @brief 信号处理函数
- */
 static void signalHandler(int sig) {
-    LOG_WARN("收到信号 {}，正在停止...", sig);
+    (void)sig;
     if (g_engine) {
         g_engine->requestStop();
     }
 }
 
-/**
- * @brief 打印使用说明
- */
 static void printUsage(const char* prog) {
-    LOG_INFO("QSchedTracer - QNX 调度追踪器 (飞行记录仪模式)");
-    LOG_INFO("===================================================");
-    LOG_INFO("用法: {} [选项]", prog);
-    LOG_INFO("");
-    LOG_INFO("选项:");
-    LOG_INFO("  -c <文件>  配置文件路径 (默认: ./qst_config.json)");
-    LOG_INFO("  -b <MB>    缓冲区大小，覆盖配置 (默认: 配置文件值或 10)");
-    LOG_INFO("  -v         详细输出");
-    LOG_INFO("  -h         显示帮助");
-    LOG_INFO("");
-    LOG_INFO("功能说明:");
-    LOG_INFO("  1. 调度追踪: 持续采集线程状态变化事件");
-    LOG_INFO("  2. 触发落盘: 配置文件定义触发条件 (如 SIGKILL)");
-    LOG_INFO("  3. Ctrl+C 退出时自动落盘");
-    LOG_INFO("");
-    LOG_INFO("输出文件:");
-    LOG_INFO("  trace_YYYYMMDD_HHMMSS.qst  (固定格式)");
-    LOG_INFO("");
-    LOG_INFO("示例:");
-    LOG_INFO("  {} -c config.json          # 使用指定配置", prog);
-    LOG_INFO("  {} -b 16                   # 16MB 缓冲", prog);
-    LOG_INFO("");
-    LOG_INFO("解析:");
-    LOG_INFO("  python3 qst_parse.py trace_*.qst -o trace.json");
-    LOG_INFO("  # 在 https://ui.perfetto.dev/ 中打开");
+    std::fprintf(stderr,
+        "QSchedTracer - QNX Ring Mode Scheduler Tracer (QST v4)\n"
+        "\n"
+        "Usage: %s [options]\n"
+        "\n"
+        "Options:\n"
+        "  -b <MB>    Buffer size in MB (default: 10)\n"
+        "  -o <dir>   Output directory (default: .)\n"
+        "  -p <name>  Output file prefix (default: tracer)\n"
+        "  -a         Capture all events (default: scheduling only)\n"
+        "  -v         Verbose output\n"
+        "  -h         Show this help\n"
+        "\n"
+        "Output file:\n"
+        "  prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-YYYYMMDD.HHMMSS.uuuuuu.qst\n"
+        "\n",
+        prog);
 }
 
-/**
- * @brief 主函数
- */
 int main(int argc, char* argv[]) {
-    std::string config_file;
-    size_t buffer_size_mb = 0;  // 0 = 使用配置文件值
-    bool verbose = false;
-    
-    // 参数解析
+    qst::config::TracerConfig config;
+
     int opt;
-    while ((opt = getopt(argc, argv, "c:b:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "b:o:p:avh")) != -1) {
         switch (opt) {
-        case 'c':
-            config_file = optarg;
-            break;
         case 'b':
-            buffer_size_mb = static_cast<size_t>(std::atoi(optarg));
+            config.buffer_size_mb = static_cast<uint32_t>(std::atoi(optarg));
+            break;
+        case 'o':
+            config.output_dir = optarg;
+            break;
+        case 'p':
+            config.file_prefix = optarg;
+            break;
+        case 'a':
+            config.event_filter = qst::config::EventFilter::All;
             break;
         case 'v':
-            verbose = true;
+            config.verbose = true;
             break;
         case 'h':
             printUsage(argv[0]);
@@ -111,56 +80,29 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
-    
-    // 设置日志级别
-    if (verbose) {
+
+    if (config.verbose) {
         qst::log::setLevel(qst::log::Level::Debug);
     }
-    
-    // 加载配置
-    qst::config::TracerConfig config;
-    
-    if (!config_file.empty()) {
-        try {
-            LOG_INFO("加载配置文件: {}", config_file);
-            config = qst::config::ConfigLoader::loadFromFile(config_file);
-        } catch (const std::exception& e) {
-            LOG_ERROR("加载配置文件失败: {}", e.what());
-            return 1;
-        }
-    } else {
-        LOG_WARN("使用默认配置");
-        config = qst::config::ConfigLoader::getDefault();
-    }
-    
-    // 覆盖缓冲区大小
-    if (buffer_size_mb > 0) {
-        config.buffer_size_mb = buffer_size_mb;
-        LOG_INFO("覆盖缓冲区大小: {} MB", buffer_size_mb);
-    }
-    
-    // 校验配置
-    std::string error;
-    if (!qst::config::ConfigLoader::validate(config, error)) {
-        LOG_ERROR("配置无效: {}", error);
+
+    if (config.buffer_size_mb == 0 || config.buffer_size_mb > 1024) {
+        std::fprintf(stderr, "Error: buffer_size_mb must be 1-1024\n");
         return 1;
     }
-    
-    // 注册信号处理
+
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
-    
-    // 创建并运行追踪引擎
+
     try {
         qst::core::TracerEngine engine(config);
         g_engine = &engine;
-        
+
         int ret = engine.run();
-        
+
         g_engine = nullptr;
         return ret;
     } catch (const std::exception& e) {
-        LOG_ERROR("异常: {}", e.what());
+        LOG_ERROR("Exception: {}", e.what());
         return 1;
     }
 }
