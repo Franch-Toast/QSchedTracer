@@ -39,8 +39,8 @@ ssh root@<QNX_IP> '/tmp/qst_tracer -b 20 -o /data/traces'
 ssh root@<QNX_IP> '/tmp/qst_tracer -a'
 
 # 6. 取回数据并解析
-scp root@<QNX_IP>:/tmp/tracer.log.*.qst .
-python3 -m qst_parser tracer.log.*.qst -o trace.json
+scp root@<QNX_IP>:/tmp/tracer.*.qst .
+python3 -m qst_parser tracer.*.qst -o trace.json
 ```
 
 ## 架构
@@ -80,7 +80,7 @@ python3 -m qst_parser tracer.log.*.qst -o trace.json
       │
       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  输出: prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-*.qst       │
+│  输出: prefix.YYYYMMDD.HHMMSS.uuuuuu.qst                   │
 │                                                             │
 │  QST v4 文件布局:                                           │
 │    QstFileHeader (64B)                                      │
@@ -110,7 +110,7 @@ Options:
   -h         Show this help
 
 Output file:
-  prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-YYYYMMDD.HHMMSS.uuuuuu.qst
+  prefix.YYYYMMDD.HHMMSS.uuuuuu.qst
 ```
 
 示例：
@@ -134,62 +134,59 @@ qst_tracer -a -b 50 -v         # 全量采集 + 50MB 缓冲 + 详细日志
 | C++ | C++17 | 语言标准 |
 | spdlog | 1.15+ | 日志库 (included in `spdlog/`) |
 
-### 方法一：build.bash (推荐, QNX 7.1)
+### 方法一：build.bash
 
 ```bash
-# 编译 Release 版本
+# QNX 7.1 Release (默认)
 ./build.bash
 
-# 编译 Debug 版本
+# QNX 8.0 Release
+./build.bash qnx80
+
+# Debug 版本
 ./build.bash debug
+./build.bash qnx80 debug
 
 # 清理
 ./build.bash clean
 ```
 
-输出：`build/qnx_aarch64/qst_tracer` (ELF 64-bit ARM aarch64)
+输出：`build/qnx71_aarch64/qst_tracer` 或 `build/qnx80_aarch64/qst_tracer`
 
-### 方法二：CMake (QNX 7.1 交叉编译)
+### 方法二：CMake
 
 ```bash
-# 需要先设置 QNX 环境变量
+# QNX 7.1 交叉编译
 export QNX_HOST=/path/to/toolchains_qnx/host/linux/x86_64
 export QNX_TARGET=/path/to/toolchains_qnx/target/qnx7
+cmake -B build_qnx71 -DCMAKE_TOOLCHAIN_FILE=cmake/qnx710-aarch64.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build_qnx71
 
-# 配置 + 编译
-cmake -B cmake_build \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/qnx710-aarch64.cmake \
-    -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake_build
-
-# 编译 QNX 8.0 版本
-cmake -B cmake_build_80 \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/qnx710-aarch64.cmake \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DQNX80=ON
-cmake --build cmake_build_80
+# QNX 8.0 交叉编译
+export QNX_HOST=/path/to/toolchains_qnx_sdp8/host/linux/x86_64
+export QNX_TARGET=/path/to/toolchains_qnx_sdp8/target/qnx
+cmake -B build_qnx80 -DCMAKE_TOOLCHAIN_FILE=cmake/qnx800-aarch64.cmake -DQNX80=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build_qnx80
 ```
-
-输出：`cmake_build/qst_tracer`
 
 ### 方法三：Bazel (Deeproute CI)
 
 ```bash
-# 构建可执行文件 (QNX SA8650 平台)
-bazel build --config=sa8650_qnx //:qst_tracer_bin
+# QNX 7.1 (SA8650)
+bazel build --config=qnx_lp8650 //:qst_tracer_bin
+
+# QNX 8.0 (SA8797)
+bazel build --config=qnx_lp8797 //:qst_tracer_bin
 
 # 构建发布包
-bazel build --config=sa8650_qnx //:qst_tracer_release_package
-
-# 构建 QNX 8.0 版本 (SA8797)
-bazel build --config=sa8797_qnx //:qst_tracer_bin
+bazel build --config=qnx_lp8650 //:qst_tracer_release_package
 ```
 
 ## 项目结构
 
 ```
 QSchedTracer/
-├── build.bash                      # 编译脚本 (QNX 7.1)
+├── build.bash                      # 编译脚本 (QNX 7.1 / 8.0)
 ├── CMakeLists.txt                  # CMake 配置
 ├── BUILD                           # Bazel 配置
 ├── README.md
@@ -200,7 +197,7 @@ QSchedTracer/
 │   ├── config/
 │   │   └── types.hpp               # TracerConfig, EventFilter
 │   ├── core/
-│   │   ├── data_buffer.hpp         # 元数据容器 (clock_freq, wallclock)
+│   │   ├── data_buffer.hpp         # 元数据容器 (clock_freq, wallclock, header-only)
 │   │   └── tracer_engine.hpp       # 追踪引擎 (Ring Mode + mmap)
 │   └── data/
 │       └── data_manager.hpp        # QST v4 文件写入器
@@ -208,18 +205,21 @@ QSchedTracer/
 ├── src/
 │   ├── main.cpp                    # CLI 入口
 │   ├── core/
-│   │   ├── data_buffer.cpp
-│   │   └── tracer_engine.cpp       # 核心实现
+│   │   ├── tracer_engine.cpp       # 核心生命周期 (构造/运行/清理)
+│   │   ├── tracer_event_config.cpp # 事件类配置 (QNX only)
+│   │   └── tracer_ring_dump.cpp    # Ring Buffer 管理 + 数据转储
 │   └── data/
 │       └── data_manager.cpp
 │
 ├── cmake/
-│   └── qnx710-aarch64.cmake       # QNX 7.1 交叉编译工具链
+│   ├── qnx710-aarch64.cmake       # QNX 7.1 交叉编译工具链
+│   └── qnx800-aarch64.cmake       # QNX 8.0 交叉编译工具链
 │
 ├── spdlog/                         # spdlog (header-only, vendored)
 │
 ├── kev_parser/                     # .kev 文件解析器 (独立子项目)
 │   ├── CMakeLists.txt
+│   ├── README.md
 │   ├── kev_parser_design.md
 │   ├── ring_buffer_design.md
 │   ├── include/kev/                # 解析器头文件

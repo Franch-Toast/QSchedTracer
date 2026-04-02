@@ -7,10 +7,12 @@ package(default_visibility = ["//visibility:public"])
 deeproute_register_toolchains()
 
 # 平台宏定义：LP8797 = QNX 8.0, LP8650 = QNX 7.1
+# 匹配优先级: vehicle-target (精确) > chip-type (宽泛) > default
 _PLATFORM_DEFINES = select({
     "@deeproute_build_tools//:LP8797-V1-SHARE_setting": ["LP8797"],
     "@deeproute_build_tools//:LP8650-V1-SHARE_setting": ["LP8650"],
     "@deeproute_build_tools//:LP8650-OS-SHARE_setting": ["LP8650"],
+    "@deeproute_build_tools//:sa8797_setting": ["LP8797"],
     "//conditions:default": ["LP8650"],
 })
 
@@ -45,7 +47,6 @@ platform_cc_library(
 
 platform_cc_library(
     name = "qst_data_buffer",
-    srcs = ["src/core/data_buffer.cpp"],
     hdrs = [
         "include/qst/core/data_buffer.hpp",
         "include/qst/types.hpp",
@@ -79,7 +80,11 @@ platform_cc_library(
 
 platform_cc_library(
     name = "qst_engine",
-    srcs = ["src/core/tracer_engine.cpp"],
+    srcs = [
+        "src/core/tracer_engine.cpp",
+        "src/core/tracer_event_config.cpp",
+        "src/core/tracer_ring_dump.cpp",
+    ],
     hdrs = [
         "include/qst/core/tracer_engine.hpp",
         "include/qst/types.hpp",

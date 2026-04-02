@@ -36,7 +36,6 @@ public:
     int openQstFile(uint64_t clock_freq,
                     const std::chrono::system_clock::time_point& start_time,
                     const std::chrono::system_clock::time_point& end_time,
-                    int event_type,
                     uint32_t bufs_per_cpu = 0);
 
     int writeSectionHeader(uint32_t magic, uint32_t entry_count);
@@ -52,9 +51,7 @@ public:
 
 private:
     std::string generateFinalPath(
-        const std::chrono::system_clock::time_point& start_time,
-        const std::chrono::system_clock::time_point& end_time,
-        int event_type);
+        const std::chrono::system_clock::time_point& end_time);
 
     static ssize_t writeAll(int fd, const void* buf, size_t count);
 

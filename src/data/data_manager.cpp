@@ -38,27 +38,17 @@ DataManager::~DataManager() {
 }
 
 std::string DataManager::generateFinalPath(
-    const std::chrono::system_clock::time_point& start_time,
-    const std::chrono::system_clock::time_point& end_time,
-    int event_type) {
+    const std::chrono::system_clock::time_point& end_time) {
 
-    auto start_t = std::chrono::system_clock::to_time_t(start_time);
-    auto start_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        start_time.time_since_epoch()) % 1000000;
     auto end_t = std::chrono::system_clock::to_time_t(end_time);
     auto end_us = std::chrono::duration_cast<std::chrono::microseconds>(
         end_time.time_since_epoch()) % 1000000;
 
-    struct tm start_tm, end_tm;
-    localtime_r(&start_t, &start_tm);
+    struct tm end_tm;
     localtime_r(&end_t, &end_tm);
 
     std::ostringstream oss;
-    oss << output_dir_ << "/" << file_prefix_ << ".log."
-        << event_type << "."
-        << std::put_time(&start_tm, "%Y%m%d.%H%M%S")
-        << "." << std::setfill('0') << std::setw(6) << start_us.count()
-        << "-"
+    oss << output_dir_ << "/" << file_prefix_ << "."
         << std::put_time(&end_tm, "%Y%m%d.%H%M%S")
         << "." << std::setfill('0') << std::setw(6) << end_us.count()
         << ".qst";
@@ -88,7 +78,6 @@ ssize_t DataManager::writeAll(int fd, const void* buf, size_t count) {
 int DataManager::openQstFile(uint64_t clock_freq,
                               const std::chrono::system_clock::time_point& start_time,
                               const std::chrono::system_clock::time_point& end_time,
-                              int event_type,
                               uint32_t bufs_per_cpu) {
     if (open_fd_ >= 0) {
         LOG_WARN("Previous QST file not closed, closing now");
@@ -96,7 +85,7 @@ int DataManager::openQstFile(uint64_t clock_freq,
         open_fd_ = -1;
     }
 
-    generateFinalPath(start_time, end_time, event_type);
+    generateFinalPath(end_time);
 
     int fd = open(last_filename_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {

@@ -29,8 +29,13 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     add_definitions(-D_QNX_SOURCE -D__QNXNTO__)
     add_compile_options(-Wall -Wextra -O2 -g -stdlib=libc++)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
+    if(NOT QNX80)
+        # QNX 7.1 (GCC 8.3): -stdlib=libc++ in CXX_FLAGS is safe (no -lc++abi)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
+    endif()
+    # QNX 8.0 (GCC 12): -stdlib=libc++ in CXX_FLAGS/LINKER_FLAGS would
+    # add -lc++abi which doesn't exist; only use add_compile_options above
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -O2 -g)
 endif()
@@ -49,8 +54,9 @@ include_directories(
 )
 
 set(TRACER_SOURCES
-    src/core/data_buffer.cpp
     src/core/tracer_engine.cpp
+    src/core/tracer_event_config.cpp
+    src/core/tracer_ring_dump.cpp
     src/data/data_manager.cpp
     src/main.cpp
 )
