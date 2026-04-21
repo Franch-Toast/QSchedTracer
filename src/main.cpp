@@ -1,17 +1,3 @@
-/**
- * @file main.cpp
- * @brief QSchedTracer - 主程序入口
- *
- * 用法:
- *   qst_tracer [选项]
- *
- *   -b <MB>    缓冲区大小 (默认: 10)
- *   -o <dir>   输出目录 (默认: .)
- *   -a         全量采集 (默认: scheduling filtered)
- *   -v         详细输出
- *   -h         显示帮助
- */
-
 #include "qst/core/tracer_engine.hpp"
 #include "qst/config/types.hpp"
 #include "qst/log.hpp"
@@ -35,26 +21,89 @@ static void signalHandler(int sig) {
 
 static void printUsage(const char* prog) {
     std::fprintf(stderr,
-        "QSchedTracer - QNX Ring Mode Scheduler Tracer (QST v4)\n"
+        "QSchedTracer v3.0 - QNX Ring Mode Scheduler Tracer\n"
         "\n"
-        "Usage: %s [options]\n"
+        "  Lightweight kernel event recorder for QNX Neutrino RTOS.\n"
+        "  Uses Ring Mode + mmap zero-copy to continuously capture scheduling\n"
+        "  events with minimal overhead. Output is QST v4 binary format.\n"
         "\n"
-        "Options:\n"
-        "  -b <MB>    Buffer size in MB (default: 10)\n"
-        "  -o <dir>   Output directory (default: .)\n"
-        "  -p <name>  Output file prefix (default: tracer)\n"
-        "  -a         Capture all events (default: scheduling only)\n"
-        "  -v         Verbose output\n"
-        "  -h         Show this help\n"
+        "USAGE\n"
+        "  %s [OPTIONS]\n"
         "\n"
-        "Output file:\n"
-        "  prefix.YYYYMMDD.HHMMSS.uuuuuu.qst\n"
+        "OPTIONS\n"
+        "  -b <MB>     Kernel trace buffer size in megabytes (default: 10).\n"
+        "              Range: 1-1024. Each kernel buffer is ~16 KB (sizeof(tracebuf_t)).\n"
+        "              QNX 7.1: total buffers = MB * 1024 / 16.\n"
+        "              QNX 8.0: per-CPU buffers = total / num_cpus.\n"
+        "              Larger buffers reduce the chance of ring overwrites during\n"
+        "              high-frequency events but consume more kernel memory.\n"
         "\n"
-        "Signals:\n"
-        "  SIGINT/SIGTERM  Dump and exit\n"
-        "  SIGUSR1         Dump and restart (for multi-round testing)\n"
+        "  -o <dir>    Output directory (default: current directory).\n"
+        "              Created automatically if it does not exist.\n"
+        "\n"
+        "  -p <name>   Output file prefix (default: \"tracer\").\n"
+        "              Final filename: <prefix>.YYYYMMDD.HHMMSS.uuuuuu.qst\n"
+        "\n"
+        "  -a          Capture ALL event classes (default: scheduling only).\n"
+        "              Default mode captures: Thread (wide), Process, Comm (wide),\n"
+        "              Control (buffer events), selected KerCalls (mutex, semaphore,\n"
+        "              condvar, MsgSend/Receive/Reply, SchedYield).\n"
+        "              With -a: ADDALLCLASSES + SETCLASSWIDE on all classes,\n"
+        "              including System, Interrupt, and all KerCalls.\n"
+        "\n"
+        "  -v          Verbose output. Enables debug-level logging including\n"
+        "              per-buffer state dumps before/after each operation.\n"
+        "\n"
+        "  -h          Show this help message and exit.\n"
+        "\n"
+        "SIGNALS\n"
+        "  SIGINT      (Ctrl+C) Stop tracing, dump ring buffer, and exit.\n"
+        "  SIGTERM     Same as SIGINT.\n"
+        "  SIGUSR1     Dump current ring buffer to a .qst file, then restart\n"
+        "              tracing (ring buffer reused, new file created).\n"
+        "              Can be sent multiple times for multi-round capture.\n"
+        "\n"
+        "OUTPUT FORMAT\n"
+        "  QST v4 binary file containing raw kernel tracebuf_t blocks:\n"
+        "\n"
+        "    QstFileHeader (64 bytes)\n"
+        "      magic='QST4', version=4, clock_freq, capture_start/end_ns,\n"
+        "      num_cpus, os_version (710/800), tracebuf_size, data_offset\n"
+        "    SectionHeader (24 bytes, magic='DATA')\n"
+        "      Raw tracebuf_t[] — scheduling/IPC/kernel call events\n"
+        "    SectionHeader (24 bytes, magic='PINF')\n"
+        "      Raw tracebuf_t[] — process/thread name information\n"
+        "\n"
+        "  Use qst_parser (C++) to convert .qst files to JSON or Chrome Trace.\n"
+        "\n"
+        "PLATFORM SUPPORT\n"
+        "  QNX 7.1    ALLOCBUFFER -> mmap(MAP_PHYS) physical address mapping\n"
+        "  QNX 8.0    LOGGER_ATTACH -> per-CPU ALLOCBUFFER virtual address\n"
+        "             (falls back to legacy paddr+mmap if ATTACH fails)\n"
+        "\n"
+        "EXAMPLES\n"
+        "  # Basic capture (10 MB buffer, scheduling events, output to cwd)\n"
+        "  %s\n"
+        "\n"
+        "  # 50 MB buffer, all events, output to /data/traces\n"
+        "  %s -a -b 50 -o /data/traces\n"
+        "\n"
+        "  # Custom prefix, verbose logging\n"
+        "  %s -p myapp -v\n"
+        "\n"
+        "  # Multi-round capture (terminal 1: start tracer)\n"
+        "  %s -b 20 -o /tmp -p test\n"
+        "  # (terminal 2: trigger dump+restart, repeat as needed)\n"
+        "  kill -USR1 $(pidof qst_tracer)\n"
+        "  kill -USR1 $(pidof qst_tracer)\n"
+        "  # (terminal 2: final stop)\n"
+        "  kill -INT $(pidof qst_tracer)\n"
+        "\n"
+        "  # Parse output files\n"
+        "  qst_parser test.*.qst -o trace.json\n"
+        "  qst_parser test.*.qst -n              # summary only\n"
         "\n",
-        prog);
+        prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char* argv[]) {
