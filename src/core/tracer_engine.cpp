@@ -80,10 +80,12 @@ int TracerEngine::run() {
 
 void TracerEngine::requestStop() {
     stop_requested_.store(true);
+    trigger_cv_.notify_one();
 }
 
 void TracerEngine::requestDump() {
     dump_requested_.store(true);
+    trigger_cv_.notify_one();
 }
 
 int TracerEngine::initialize() {
@@ -107,9 +109,14 @@ void TracerEngine::runLoop() {
     TraceEvent(_NTO_TRACE_STARTNOSTATE);
 
     while (!stop_requested_.load()) {
-        usleep(100000);  // 100ms poll
+        std::unique_lock<std::mutex> lock(trigger_mutex_);
+        trigger_cv_.wait_for(lock, std::chrono::seconds(3), [this] {
+            return stop_requested_.load() || dump_requested_.load();
+        });
+
         if (dump_requested_.exchange(false)) {
             LOG_INFO("SIGUSR1 received, dumping and restarting...");
+            lock.unlock();
             dumpSelfManaged(0, true);
         }
     }
@@ -128,7 +135,7 @@ void TracerEngine::cleanup() {
     TraceEvent(_NTO_TRACE_STOP);
 
     if (kernel_buffers_ != nullptr && kernel_buffers_ != MAP_FAILED) {
-#if !defined(LP8797)
+#if !defined(QNX_800)
         size_t total_size = total_kernel_buffers_ * sizeof(tracebuf_t);
         munmap(kernel_buffers_, total_size);
 #else
@@ -142,7 +149,7 @@ void TracerEngine::cleanup() {
 
     TraceEvent(_NTO_TRACE_DEALLOCBUFFER);
 
-#if defined(LP8797)
+#if defined(QNX_800)
     if (logger_attached_) {
         TraceEvent(_NTO_TRACE_LOGGER_DETACH);
         logger_attached_ = false;

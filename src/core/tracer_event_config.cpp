@@ -82,7 +82,7 @@ int TracerEngine::setupSchedulingEvents() {
     TraceEvent(_NTO_TRACE_SETCLASSWIDE, _NTO_TRACE_THREAD);
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_THREAD);
 
-#if !defined(LP8797) && defined(_NTO_TRACE_VTHREAD)
+#if !defined(QNX_800) && defined(_NTO_TRACE_VTHREAD)
     LOG_INFO("  [2/8] VThread state events (Wide mode)...");
     TraceEvent(_NTO_TRACE_SETCLASSWIDE, _NTO_TRACE_VTHREAD);
     TraceEvent(_NTO_TRACE_ADDCLASS, _NTO_TRACE_VTHREAD);
@@ -150,7 +150,7 @@ void TracerEngine::configureEventClasses() {
 
     if (need_classwide) {
         TraceEvent(_NTO_TRACE_SETCLASSWIDE, _NTO_TRACE_THREAD);
-#if !defined(LP8797) && defined(_NTO_TRACE_VTHREAD)
+#if !defined(QNX_800) && defined(_NTO_TRACE_VTHREAD)
         TraceEvent(_NTO_TRACE_SETCLASSWIDE, _NTO_TRACE_VTHREAD);
 #endif
         TraceEvent(_NTO_TRACE_SETCLASSWIDE, _NTO_TRACE_COMM);

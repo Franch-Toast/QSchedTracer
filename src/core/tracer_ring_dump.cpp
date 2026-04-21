@@ -40,7 +40,7 @@ int TracerEngine::setupSelfManagedMode() {
         return -1;
     }
 
-#if defined(LP8797)
+#if defined(QNX_800)
     // QNX 8.0: Two-strategy approach:
     // Strategy 1: LOGGER_ATTACH + per-CPU ALLOCBUFFER (new API)
     // Strategy 2: Direct ALLOCBUFFER with paddr + mmap (legacy, as in QNX SAT sample)
@@ -140,7 +140,7 @@ int TracerEngine::setupSelfManagedMode() {
         return -1;
     }
 
-#if !defined(LP8797)
+#if !defined(QNX_800)
     write_start_index_ = 0;
 #else
     if (!logger_attached_) {
@@ -255,7 +255,7 @@ void TracerEngine::debugDumpBufferStates(const char* label) {
         LOG_INFO("{}", oss.str());
     }
 
-#if defined(LP8797)
+#if defined(QNX_800)
     if (logger_attached_) {
     LOG_INFO("[DBG-BUF] --- QNX 8.0 per-CPU partition view ---");
     for (int cpu = 0; cpu < num_cpus; cpu++) {
@@ -355,7 +355,7 @@ void TracerEngine::dumpSelfManaged(int event_type, bool restart) {
     int total_data = 0;
     uint32_t data_max_seq = 0;
 
-#if !defined(LP8797)
+#if !defined(QNX_800)
     auto data_range = scanValidRange(kernel_buffers_, total_kernel_buffers_,
                                      write_start_index_, 0);
     total_data = data_range.count;
@@ -412,7 +412,7 @@ void TracerEngine::dumpSelfManaged(int event_type, bool restart) {
 
     // Phase 2: open file, write FileHeader + DATA section
     uint32_t bpc = 0;
-#if defined(LP8797)
+#if defined(QNX_800)
     bpc = logger_attached_ ? static_cast<uint32_t>(bufs_per_cpu_) : 0;
 #endif
 
@@ -437,7 +437,7 @@ void TracerEngine::dumpSelfManaged(int event_type, bool restart) {
     }
 
     if (write_ok) {
-#if !defined(LP8797)
+#if !defined(QNX_800)
         if (data_manager_->writeContiguousTracebufs(
                 kernel_buffers_, total_kernel_buffers_,
                 data_range.start, data_range.count) != 0) {
@@ -501,7 +501,7 @@ void TracerEngine::dumpSelfManaged(int event_type, bool restart) {
     // Phase 4: scan PINF + write PINF section
     int total_pinf = 0;
 
-#if !defined(LP8797)
+#if !defined(QNX_800)
     auto pinf_range = scanValidRange(kernel_buffers_, total_kernel_buffers_,
                                      write_start_index_, data_max_seq);
     total_pinf = pinf_range.count;
@@ -539,7 +539,7 @@ void TracerEngine::dumpSelfManaged(int event_type, bool restart) {
 
     data_manager_->writeSectionHeader(v4::PINF_MAGIC, total_pinf);
 
-#if !defined(LP8797)
+#if !defined(QNX_800)
     if (total_pinf > 0) {
         data_manager_->writeContiguousTracebufs(
             kernel_buffers_, total_kernel_buffers_,

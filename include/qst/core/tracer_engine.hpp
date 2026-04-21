@@ -14,6 +14,8 @@
 
 #include <memory>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <vector>
 
@@ -84,6 +86,8 @@ private:
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> dump_requested_{false};
+    std::mutex trigger_mutex_;
+    std::condition_variable trigger_cv_;
     volatile uint64_t buffers_processed_{0};
     int kernel_buffer_count_{0};
 
@@ -92,7 +96,7 @@ private:
     int total_kernel_buffers_{0};
     int write_start_index_{0};
 
-#if !defined(LP8797)
+#if !defined(QNX_800)
     paddr_t kernel_paddr_{0};
 #else
     bool logger_attached_{false};

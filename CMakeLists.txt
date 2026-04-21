@@ -40,12 +40,12 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic -O2 -g)
 endif()
 
-# 平台宏 (默认 QNX 7.1; 构建 8.0 时传 -DLP8797)
-option(QNX80 "Build for QNX 8.0 (LP8797)" OFF)
+# 平台宏 (默认 QNX 7.1; 构建 8.0 时传 -DQNX80=ON)
+option(QNX80 "Build for QNX 8.0" OFF)
 if(QNX80)
-    add_definitions(-DLP8797)
+    add_definitions(-DQNX_800)
 else()
-    add_definitions(-DLP8650)
+    add_definitions(-DQNX_710)
 endif()
 
 include_directories(

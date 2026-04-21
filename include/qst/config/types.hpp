@@ -28,12 +28,12 @@ struct TracerConfig {
      * @brief 根据 buffer_size_mb 和 CPU 数量计算内核 buffer 数量
      *
      * QNX 7.1: 总 buffer 数
-     * QNX 8.0 (LP8797): 每 CPU 的 buffer 数
+     * QNX 8.0: 每 CPU 的 buffer 数
      * 每个 kernel buffer 约 16KB (sizeof(tracebuf_t))
      */
     int computeKernelBufferCount(int num_cpus) const {
         int total_buffers = static_cast<int>(buffer_size_mb) * 1024 / 16;
-#if defined(LP8797)
+#if defined(QNX_800)
         return (num_cpus > 0) ? (total_buffers / num_cpus) : total_buffers;
 #else
         (void)num_cpus;

@@ -106,7 +106,7 @@ int DataManager::openQstFile(uint64_t clock_freq,
     fh.capture_end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         end_time.time_since_epoch()).count();
     fh.num_cpus = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
-#if defined(LP8797)
+#if defined(QNX_800)
     fh.os_version = 800;
 #else
     fh.os_version = 710;
