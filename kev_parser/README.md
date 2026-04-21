@@ -92,32 +92,30 @@ QNX 8.0 的 `libtraceparser` 无法解析 QNX 7.1 产生的 `.kev` 文件（反�
 
 ## 使用
 
-```
-Usage: kev_parser [OPTIONS] <input.kev>
+运行 `kev_parser --help` 可查看完整帮助信息。
 
-Parse QNX tracelogger kev files to structured JSON/text.
-Automatically handles ring-buffer gap detection.
+### 命令行参数
 
-Output:
-  -o PATH           输出文件 (默认: <input>.jsonl, '-' 表示 stdout)
-  -f FORMAT         输出格式: jsonl (默认), text
-  -m MODE           输出模式: full (默认), summary
-  -v, --verbose     详细 stderr 输出
+| 选项 | 说明 |
+|------|------|
+| `-o PATH` | 输出文件（默认: `<input>.jsonl`，`-` 表示 stdout） |
+| `-f FORMAT` | 输出格式：`jsonl`（默认）或 `text` |
+| `-m MODE` | 输出模式：`full`（默认）或 `summary`（仅统计） |
+| `-v, --verbose` | 详细 stderr 输出 |
+| `--time-start T` | 开始时间过滤 |
+| `--time-end T` | 结束时间过滤 |
+| `--pid PID,...` | 按进程 ID 过滤（逗号分隔） |
+| `--tid TID,...` | 按线程 ID 过滤（逗号分隔） |
+| `--class CLS,...` | 按事件类过滤：`THREAD`, `KERCALL_ENTER`, `KERCALL_EXIT`, `COMM`, `SYSTEM`, `INT`, `PROCESS` |
 
-Filtering:
-  --time-start T    开始时间
-  --time-end T      结束时间
-  --pid PID,...     按进程 ID 过滤（逗号分隔）
-  --tid TID,...     按线程 ID 过滤（逗号分隔）
-  --class CLS,...   按事件类过滤: THREAD,KERCALL_ENTER,KERCALL_EXIT,
-                    COMM,SYSTEM,INT,PROCESS
+### 时间格式
 
-Time formats:
-  +N.nnn            从追踪开始向后的相对秒数
-  -N.nnn            从追踪结束向前的相对秒数
-  "YYYY-MM-DD HH:MM:SS[.uuuuuu]"  绝对墙钟时间 (UTC)
-  NNN               原始 trace 纳秒值
-```
+| 格式 | 说明 |
+|------|------|
+| `+N.nnn` | 从追踪开始向后的相对秒数 |
+| `-N.nnn` | 从追踪结束向前的相对秒数 |
+| `YYYY-MM-DD HH:MM:SS[.frac]` | 绝对墙钟时间（UTC），需文件名含时间戳 |
+| `NNN` | 原始 trace 纳秒值 |
 
 ### 使用示例
 
