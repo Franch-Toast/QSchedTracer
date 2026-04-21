@@ -70,6 +70,21 @@ endif()
 
 install(TARGETS qst_tracer RUNTIME DESTINATION bin)
 
+# Trace API diagnostic tools (pure C, no spdlog dependency)
+if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
+    enable_language(C)
+
+    add_executable(trace_api_test tests/trace_api_test.c)
+    target_compile_definitions(trace_api_test PRIVATE _QNX_SOURCE __QNXNTO__)
+    target_compile_options(trace_api_test PRIVATE -Wall -O2 -g)
+
+    add_executable(trace_official_sample tests/trace_official_sample.c)
+    target_compile_definitions(trace_official_sample PRIVATE _QNX_SOURCE __QNXNTO__)
+    target_compile_options(trace_official_sample PRIVATE -Wall -O2 -g)
+
+    install(TARGETS trace_api_test trace_official_sample RUNTIME DESTINATION bin)
+endif()
+
 message(STATUS "")
 message(STATUS "  QSchedTracer v${PROJECT_VERSION} (Ring Mode, QST v4)")
 message(STATUS "  Platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}")

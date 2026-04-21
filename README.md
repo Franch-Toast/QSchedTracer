@@ -4,7 +4,7 @@
 
 ## 概述
 
-QSchedTracer 是专为 QNX Neutrino RTOS 设计的内核调度追踪工具。采用 Ring Mode + mmap 零拷贝架构，持续记录调度事件，Ctrl+C 停止后直接写入 QST v4 二进制文件。
+QSchedTracer 是专为 QNX Neutrino RTOS 设计的内核调度追踪工具。采用 Ring Mode + mmap 零拷贝架构，持续记录调度事件，通过信号控制落盘和重启。
 
 支持平台：
 
@@ -18,6 +18,7 @@ QSchedTracer 是专为 QNX Neutrino RTOS 设计的内核调度追踪工具。采
 - **Ring Mode + mmap 零拷贝**：内核 ring buffer 直接映射到用户空间，STOP 后零拷贝写入文件
 - **QST v4 文件格式**：`QstFileHeader` (64B) → `DATA` section (raw tracebuf_t) → `PINF` section (进程信息)
 - **事件过滤**：默认仅调度相关事件 (Thread/Comm/KerCall)，`-a` 全量采集
+- **信号驱动控制**：SIGINT = dump+退出，SIGUSR1 = dump+restart（支持多轮采集）
 - **无配置文件**：CLI 参数直接控制，无需 JSON 配置
 
 ## 快速开始
@@ -38,7 +39,10 @@ ssh root@<QNX_IP> '/tmp/qst_tracer -b 20 -o /data/traces'
 # 5. 全量采集模式
 ssh root@<QNX_IP> '/tmp/qst_tracer -a'
 
-# 6. 取回数据并解析
+# 6. 多轮采集 (另一个终端发送 SIGUSR1 触发 dump+restart)
+ssh root@<QNX_IP> 'kill -USR1 $(pidof qst_tracer)'  # 可多次执行
+
+# 7. 取回数据并解析
 scp root@<QNX_IP>:/tmp/tracer.*.qst .
 python3 -m qst_parser tracer.*.qst -o trace.json
 ```
@@ -65,7 +69,9 @@ python3 -m qst_parser tracer.*.qst -o trace.json
 │  ├── initKernelTraceBase()     IO 权限 + 清理残留            │
 │  ├── setupSelfManagedMode()    ALLOCBUFFER + mmap + SETRING │
 │  ├── configureEventClasses()   事件过滤配置                  │
-│  ├── runLoop()                 START → poll → Ctrl+C        │
+│  ├── runLoop()                 START → poll → signal dispatch │
+│  │    ├── SIGUSR1 →            dumpSelfManaged(restart=true) │
+│  │    └── SIGINT  →            dumpSelfManaged(restart=false)│
 │  └── dumpSelfManaged()         STOP → FLUSH → scan → write  │
 │       ├── [1] scanValidRange() 扫描有效 tracebuf_t 区间     │
 │       ├── [2] DataManager.openQstFile()    写 QstFileHeader │
@@ -111,6 +117,10 @@ Options:
 
 Output file:
   prefix.YYYYMMDD.HHMMSS.uuuuuu.qst
+
+Signals:
+  SIGINT/SIGTERM  Dump and exit
+  SIGUSR1         Dump and restart (for multi-round testing)
 ```
 
 示例：
@@ -122,6 +132,23 @@ qst_tracer -o /data/traces     # 指定输出目录
 qst_tracer -p myapp            # 输出文件前缀为 myapp
 qst_tracer -a                  # 全量采集所有事件类别
 qst_tracer -a -b 50 -v         # 全量采集 + 50MB 缓冲 + 详细日志
+```
+
+### 多轮采集 (dump+restart)
+
+```bash
+# 终端 1: 启动采集（verbose 模式可观察 SETRINGMODE restart 行为）
+/tmp/qst_tracer -b 50 -o /tmp -p test -v
+
+# 终端 2: 触发 dump+restart (可多次执行)
+kill -USR1 $(pidof qst_tracer)
+kill -USR1 $(pidof qst_tracer)   # 第二轮
+
+# 终端 2: 最终停止
+kill -INT $(pidof qst_tracer)
+
+# 每次 SIGUSR1 生成一个 .qst 文件，最终 SIGINT 再生成一个
+ls /tmp/test.*.qst
 ```
 
 ## 编译

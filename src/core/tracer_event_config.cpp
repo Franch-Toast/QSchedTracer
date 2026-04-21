@@ -19,6 +19,7 @@
 #include <sys/trace.h>
 #include <sys/kercalls.h>
 #include <sys/wait.h>
+#include <sys/procmgr.h>
 
 namespace qst {
 namespace core {
@@ -30,6 +31,24 @@ int TracerEngine::initKernelTraceBase() {
         return -1;
     }
 
+    ret = procmgr_ability(0,
+        PROCMGR_ADN_ROOT | PROCMGR_AOP_ALLOW | PROCMGR_AID_TRACE,
+        PROCMGR_ADN_ROOT | PROCMGR_AOP_ALLOW | PROCMGR_AID_MEM_PHYS,
+        PROCMGR_AID_EOL);
+    if (ret == -1) {
+        LOG_WARN("procmgr_ability(TRACE|MEM_PHYS) failed: {} (continuing anyway)",
+                 strerror(errno));
+    } else {
+        LOG_INFO("PROCMGR_AID_TRACE + MEM_PHYS abilities granted");
+    }
+
+    int trace_support = TraceEvent(_NTO_TRACE_QUERYSUPPORT);
+    if (trace_support == _NTO_TRACE_NOINSTRSUPP) {
+        LOG_ERROR("Kernel instrumentation not enabled (procnto not instrumented)");
+        return -1;
+    }
+    LOG_INFO("Kernel instrumentation: supported");
+
     killExistingTracelogger();
     return 0;
 }
@@ -37,14 +56,10 @@ int TracerEngine::initKernelTraceBase() {
 void TracerEngine::killExistingTracelogger() {
     LOG_INFO("Cleaning up residual trace state...");
 
-    TraceEvent(_NTO_TRACE_STOP);
+    system("slay -f tracelogger 2>/dev/null");
+    usleep(300000);
+    system("slay -f qst_tracer 2>/dev/null");
     usleep(200000);
-
-    int ret = system("slay -f tracelogger 2>/dev/null");
-    if (WIFEXITED(ret) && WEXITSTATUS(ret) == 0) {
-        LOG_WARN("Killed existing tracelogger process(es)");
-        usleep(500000);
-    }
 
     TraceEvent(_NTO_TRACE_STOP);
     TraceEvent(_NTO_TRACE_DEALLOCBUFFER);

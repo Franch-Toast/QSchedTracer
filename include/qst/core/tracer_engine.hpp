@@ -2,7 +2,7 @@
  * @file core/tracer_engine.hpp
  * @brief QSchedTracer - 追踪引擎 (Ring Mode + mmap 零拷贝)
  *
- * 支持 QNX 7.1 (mmap 物理地址) 和 QNX 8.0 (LOGGER_ATTACH + per-CPU buffer)。
+ * 支持 QNX 7.1 (paddr + mmap) 和 QNX 8.0 (LOGGER_ATTACH vaddr 或 legacy paddr 回退)。
  * 采用内核 Ring Mode，STOP 时通过 mmap 零拷贝写入 QST v4 文件。
  */
 
@@ -37,6 +37,7 @@ public:
 
     int run();
     void requestStop();
+    void requestDump();
 
     DataBuffer& dataBuffer() { return data_buffer_; }
     const config::TracerConfig& config() const { return config_; }
@@ -82,6 +83,7 @@ private:
     std::unique_ptr<data::DataManager> data_manager_;
 
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> dump_requested_{false};
     volatile uint64_t buffers_processed_{0};
     int kernel_buffer_count_{0};
 
@@ -94,6 +96,7 @@ private:
     paddr_t kernel_paddr_{0};
 #else
     bool logger_attached_{false};
+    paddr_t kernel_paddr_{0};
     int bufs_per_cpu_{0};
     std::vector<int> cpu_write_start_;
 #endif

@@ -82,6 +82,10 @@ void TracerEngine::requestStop() {
     stop_requested_.store(true);
 }
 
+void TracerEngine::requestDump() {
+    dump_requested_.store(true);
+}
+
 int TracerEngine::initialize() {
     LOG_INFO("Initializing...");
 
@@ -96,7 +100,7 @@ int TracerEngine::initialize() {
 
 void TracerEngine::runLoop() {
     LOG_INFO("Starting Ring Mode trace...");
-    LOG_INFO("Press Ctrl+C to stop and dump.");
+    LOG_INFO("SIGINT (Ctrl+C) = dump + exit, SIGUSR1 = dump + restart");
 
 #ifdef __QNX__
     trace_start_time_ = std::chrono::system_clock::now();
@@ -104,6 +108,10 @@ void TracerEngine::runLoop() {
 
     while (!stop_requested_.load()) {
         usleep(100000);  // 100ms poll
+        if (dump_requested_.exchange(false)) {
+            LOG_INFO("SIGUSR1 received, dumping and restarting...");
+            dumpSelfManaged(0, true);
+        }
     }
 
     dumpSelfManaged(0, false);
@@ -123,6 +131,11 @@ void TracerEngine::cleanup() {
 #if !defined(LP8797)
         size_t total_size = total_kernel_buffers_ * sizeof(tracebuf_t);
         munmap(kernel_buffers_, total_size);
+#else
+        if (!logger_attached_) {
+            size_t total_size = total_kernel_buffers_ * sizeof(tracebuf_t);
+            munmap(kernel_buffers_, total_size);
+        }
 #endif
         kernel_buffers_ = nullptr;
     }

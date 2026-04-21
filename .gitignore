@@ -6,22 +6,28 @@
 # 编译输出
 # ============================================
 build/
+build_*/
+cmake_build/
 *.o
 *.a
 *.so
 *.so.*
 dist/
 
-cmake_build/
-
+# Bazel
 bazel-bin
 bazel-out
 bazel-testlogs
 bazel-QSchedTracer
+MODULE.bazel.lock
+
+# kev_parser bundled deps (libtraceparser.a 是项目依赖，需要提交)
+!kev_parser/deps/
+!kev_parser/deps/**
+!kev_parser/deps/**/*.a
+
 .cache/
 __pycache__/
-
-MODULE.bazel.lock
 
 docs/
 

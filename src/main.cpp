@@ -25,8 +25,10 @@
 static qst::core::TracerEngine* g_engine = nullptr;
 
 static void signalHandler(int sig) {
-    (void)sig;
-    if (g_engine) {
+    if (!g_engine) return;
+    if (sig == SIGUSR1) {
+        g_engine->requestDump();
+    } else {
         g_engine->requestStop();
     }
 }
@@ -46,7 +48,11 @@ static void printUsage(const char* prog) {
         "  -h         Show this help\n"
         "\n"
         "Output file:\n"
-        "  prefix.log.EVENT.YYYYMMDD.HHMMSS.uuuuuu-YYYYMMDD.HHMMSS.uuuuuu.qst\n"
+        "  prefix.YYYYMMDD.HHMMSS.uuuuuu.qst\n"
+        "\n"
+        "Signals:\n"
+        "  SIGINT/SIGTERM  Dump and exit\n"
+        "  SIGUSR1         Dump and restart (for multi-round testing)\n"
         "\n",
         prog);
 }
@@ -92,6 +98,7 @@ int main(int argc, char* argv[]) {
 
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+    std::signal(SIGUSR1, signalHandler);
 
     try {
         qst::core::TracerEngine engine(config);
