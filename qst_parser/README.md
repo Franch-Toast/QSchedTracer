@@ -102,6 +102,8 @@ make -j$(nproc)
 
 ### 命令行参数
 
+运行 `qst_parser --help` 可查看完整选项说明、输出格式描述和使用示例。
+
 | 选项 | 说明 |
 |------|------|
 | `-o, --output PATH` | 输出文件路径（默认: `<input>.json`） |
@@ -111,7 +113,18 @@ make -j$(nproc)
 | `-v, --verbose` | 详细输出 |
 | `--pid PID` | 按进程 ID 过滤（可重复指定多个） |
 | `--tid TID` | 按线程 ID 过滤（需配合 `--pid`，可重复） |
-| `-h, --help` | 显示完整帮助信息（含所有选项说明、输出格式和使用示例） |
+| `--time-start TIME` | 时间过滤：仅导出此时间之后的事件 |
+| `--time-end TIME` | 时间过滤：仅导出此时间之前的事件 |
+| `-h, --help` | 显示完整帮助信息 |
+
+### 时间格式
+
+| 格式 | 说明 |
+|------|------|
+| `+N.nnn` | 从 trace 开始向后的相对秒数 |
+| `-N.nnn` | 从 trace 结束向前的相对秒数 |
+| `YYYY-MM-DD HH:MM:SS[.frac]` | 绝对墙钟时间 (UTC) |
+| `NNN` | 原始 epoch 纳秒值 |
 
 ### 使用示例
 
@@ -133,6 +146,17 @@ make -j$(nproc)
 
 # 过滤特定线程
 ./build/qst_parser trace.qst --pid 12345 --tid 1 --tid 2
+
+# 只导出最后 5 秒
+./build/qst_parser trace.qst --time-start -5
+
+# 只导出前 10 秒
+./build/qst_parser trace.qst --time-end +10
+
+# 绝对时间范围过滤
+./build/qst_parser trace.qst \
+    --time-start "2026-03-19 13:53:00" \
+    --time-end "2026-03-19 13:54:00"
 ```
 
 ### 查看结果

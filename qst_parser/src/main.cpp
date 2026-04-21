@@ -1,12 +1,60 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <set>
 #include <chrono>
 #include <getopt.h>
 
 #include "qst/streaming_parser.h"
+#include "qst/buffer_reader.h"
+
+static int64_t parse_time_arg(const char* str, int64_t capture_start_ns,
+                              int64_t capture_end_ns) {
+    if (!str || !str[0]) return 0;
+
+    if (str[0] == '+') {
+        double secs = std::atof(str + 1);
+        return capture_start_ns + static_cast<int64_t>(secs * 1e9);
+    }
+    if (str[0] == '-') {
+        double secs = std::atof(str + 1);
+        return capture_end_ns - static_cast<int64_t>(secs * 1e9);
+    }
+
+    int Y, M, D, h, m;
+    double s;
+    if (std::sscanf(str, "%d-%d-%d %d:%d:%lf", &Y, &M, &D, &h, &m, &s) == 6) {
+        struct tm tm = {};
+        tm.tm_year = Y - 1900;
+        tm.tm_mon = M - 1;
+        tm.tm_mday = D;
+        tm.tm_hour = h;
+        tm.tm_min = m;
+        tm.tm_sec = static_cast<int>(s);
+        double frac = s - tm.tm_sec;
+        time_t epoch = timegm(&tm);
+        return static_cast<int64_t>(epoch) * 1000000000LL +
+               static_cast<int64_t>(frac * 1e9);
+    }
+
+    return std::atoll(str);
+}
+
+static qst::QstFileHeader read_qst_header(const char* path) {
+    qst::QstFileHeader h;
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: cannot open %s\n", path);
+        return h;
+    }
+    uint8_t buf[64];
+    if (fread(buf, 1, 64, f) == 64)
+        h.parse(buf);
+    fclose(f);
+    return h;
+}
 
 static void usage(const char* prog) {
     fprintf(stderr,
@@ -47,7 +95,16 @@ static void usage(const char* prog) {
         "                          --pid. Only threads matching BOTH pid and tid filters\n"
         "                          are exported. Can be specified multiple times.\n"
         "\n"
+        "  --time-start TIME       Filter events: only export events at or after TIME.\n"
+        "  --time-end TIME         Filter events: only export events at or before TIME.\n"
+        "\n"
         "  -h, --help              Show this help message and exit.\n"
+        "\n"
+        "TIME FORMATS:\n"
+        "  +N.nnn                  Relative seconds from trace start (e.g., +5.0)\n"
+        "  -N.nnn                  Relative seconds from trace end (e.g., -10.0)\n"
+        "  \"YYYY-MM-DD HH:MM:SS[.frac]\"  Absolute wall clock time (UTC)\n"
+        "  NNN                     Raw epoch nanosecond value\n"
         "\n"
         "OUTPUT FORMAT:\n"
         "  The output is a Chrome JSON Trace Event Format file containing:\n"
@@ -93,8 +150,19 @@ static void usage(const char* prog) {
         "       %s trace.qst --pid 12345 --tid 1 --tid 3\n"
         "\n"
         "  8) Combine lightweight mode with PID filter:\n"
-        "       %s trace.qst -l --pid 12345 -o filtered.json\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "       %s trace.qst -l --pid 12345 -o filtered.json\n"
+        "\n"
+        "  9) Export only the last 5 seconds of the trace:\n"
+        "       %s trace.qst --time-start -5\n"
+        "\n"
+        " 10) Export a specific wall clock time range:\n"
+        "       %s trace.qst --time-start \"2026-03-19 13:53:00\" "
+                "--time-end \"2026-03-19 13:54:00\"\n"
+        "\n"
+        " 11) Export the first 10 seconds:\n"
+        "       %s trace.qst --time-end +10\n",
+        prog, prog, prog, prog, prog, prog, prog, prog, prog,
+        prog, prog, prog);
 }
 
 int main(int argc, char* argv[]) {
@@ -106,6 +174,8 @@ int main(int argc, char* argv[]) {
         {"verbose",     no_argument,       nullptr, 'v'},
         {"pid",         required_argument, nullptr, 'P'},
         {"tid",         required_argument, nullptr, 'T'},
+        {"time-start",  required_argument, nullptr, 'S'},
+        {"time-end",    required_argument, nullptr, 'E'},
         {"help",        no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -116,6 +186,8 @@ int main(int argc, char* argv[]) {
     bool lightweight = false;
     bool verbose = false;
     std::set<int> pids, tids;
+    const char* time_start_str = nullptr;
+    const char* time_end_str = nullptr;
 
     int opt;
     while ((opt = getopt_long(argc, argv, "o:f:nlvh", long_options, nullptr)) != -1) {
@@ -127,6 +199,8 @@ int main(int argc, char* argv[]) {
             case 'v': verbose = true; break;
             case 'P': pids.insert(atoi(optarg)); break;
             case 'T': tids.insert(atoi(optarg)); break;
+            case 'S': time_start_str = optarg; break;
+            case 'E': time_end_str = optarg; break;
             case 'h': usage(argv[0]); return 0;
             default: usage(argv[0]); return 1;
         }
@@ -139,11 +213,28 @@ int main(int argc, char* argv[]) {
     }
     std::string input = argv[optind];
 
+    int64_t filter_time_start_ns = 0;
+    int64_t filter_time_end_ns = 0;
+    if (time_start_str || time_end_str) {
+        auto qh = read_qst_header(input.c_str());
+        if (qh.magic == 0) {
+            fprintf(stderr, "Error: cannot read QST header for time range resolution\n");
+            return 1;
+        }
+        if (time_start_str)
+            filter_time_start_ns = parse_time_arg(time_start_str,
+                                                   qh.capture_start_ns, qh.capture_end_ns);
+        if (time_end_str)
+            filter_time_end_ns = parse_time_arg(time_end_str,
+                                                 qh.capture_start_ns, qh.capture_end_ns);
+    }
+
     const std::set<int>* filter_pids = pids.empty() ? nullptr : &pids;
     const std::set<int>* filter_tids = tids.empty() ? nullptr : &tids;
 
     qst::StreamingParser sp(input, verbose, lightweight,
-                            filter_pids, filter_tids);
+                            filter_pids, filter_tids,
+                            filter_time_start_ns, filter_time_end_ns);
 
     if (no_export) {
         auto t0 = std::chrono::steady_clock::now();
@@ -164,6 +255,10 @@ int main(int argc, char* argv[]) {
         printf("  Format: %s\n", format.c_str());
         if (lightweight) printf("  Mode: lightweight (thread/CPU events only)\n");
         if (filter_pids) printf("  PID filter: %zu process(es)\n", pids.size());
+        if (filter_time_start_ns)
+            printf("  Time start: %lld ns\n", (long long)filter_time_start_ns);
+        if (filter_time_end_ns)
+            printf("  Time end:   %lld ns\n", (long long)filter_time_end_ns);
 
         auto t0 = std::chrono::steady_clock::now();
         auto stats = sp.parse_and_export_json(output_path);
